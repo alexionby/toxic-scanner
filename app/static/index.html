@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Toxic Scanner</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="tool-panel">
+        <div class="heading">
+          <p class="eyebrow">Toxic Scanner</p>
+          <h1>Проверка работодателя</h1>
+        </div>
+
+        <form id="analyze-form" class="search-form">
+          <label for="company-name">Название компании</label>
+          <div class="input-row">
+            <input
+              id="company-name"
+              name="company_name"
+              type="text"
+              placeholder="Например: Google"
+              autocomplete="organization"
+              required
+            />
+            <button id="submit-button" type="submit">Проверить</button>
+          </div>
+        </form>
+
+        <div id="status" class="status" role="status" aria-live="polite">
+          Готов к проверке.
+        </div>
+      </section>
+
+      <section id="result-card" class="result-panel is-hidden">
+        <div class="result-header">
+          <div>
+            <p class="eyebrow">Отчёт</p>
+            <h2 id="result-company">Компания</h2>
+          </div>
+          <a id="report-link" class="report-link" href="#" target="_blank" rel="noreferrer">
+            Открыть файл
+          </a>
+        </div>
+
+        <pre id="report-output" class="report-output"></pre>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
