@@ -1,8 +1,8 @@
 # Используем минимальный образ
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Ставим uv из официального образа
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 WORKDIR /app
 
