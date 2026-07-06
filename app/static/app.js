@@ -20,6 +20,156 @@ function renderMarkdownReport(markdown) {
   reportOutput.innerHTML = DOMPurify.sanitize(html);
 }
 
+// --- Звезда качества (радар, 5 осей) ---
+// Ось с value=null - честное "нет данных": серый пунктир с подписью
+// "н/д", в полигон значений не входит и не читается как низкая оценка.
+
+const scoresPanel = document.querySelector("#scores-panel");
+const radarChart = document.querySelector("#radar-chart");
+const scoresList = document.querySelector("#scores-list");
+
+const SCORE_AXES = [
+  ["reliability", "Надёжность"],
+  ["finances", "Финансы"],
+  ["people", "Люди"],
+  ["transparency", "Прозрачность"],
+  ["future_readiness", "Будущее"],
+];
+
+// cx с запасом под боковые подписи ("Прозрачность", "Будущее — н/д"):
+// они анкорятся снаружи осей и не должны вылезать за viewBox 420x300.
+const RADAR = { cx: 210, cy: 150, r: 95 };
+
+function axisValue(axis) {
+  return typeof axis?.value === "number"
+    ? Math.max(0, Math.min(100, axis.value))
+    : null;
+}
+
+function polarPoint(angleDeg, radius) {
+  const rad = (angleDeg * Math.PI) / 180;
+  return [RADAR.cx + radius * Math.cos(rad), RADAR.cy + radius * Math.sin(rad)];
+}
+
+function axisAngle(index) {
+  return -90 + index * (360 / SCORE_AXES.length);
+}
+
+function svgEl(name, attrs) {
+  const el = document.createElementNS("http://www.w3.org/2000/svg", name);
+  for (const [key, value] of Object.entries(attrs)) {
+    el.setAttribute(key, value);
+  }
+  return el;
+}
+
+function drawRadar(scores) {
+  radarChart.replaceChildren();
+
+  for (const level of [25, 50, 75, 100]) {
+    const points = SCORE_AXES.map((_, i) =>
+      polarPoint(axisAngle(i), (RADAR.r * level) / 100).join(",")
+    ).join(" ");
+    radarChart.append(svgEl("polygon", { points, class: "radar-grid" }));
+  }
+
+  const valuePoints = [];
+  SCORE_AXES.forEach(([key, label], i) => {
+    const value = axisValue(scores[key]);
+    const angle = axisAngle(i);
+
+    const [x2, y2] = polarPoint(angle, RADAR.r);
+    radarChart.append(
+      svgEl("line", {
+        x1: RADAR.cx,
+        y1: RADAR.cy,
+        x2,
+        y2,
+        class: value === null ? "radar-axis radar-axis-null" : "radar-axis",
+      })
+    );
+
+    const [lx, ly] = polarPoint(angle, RADAR.r + 16);
+    const anchor =
+      Math.abs(lx - RADAR.cx) < 6 ? "middle" : lx > RADAR.cx ? "start" : "end";
+    const baseline =
+      ly < RADAR.cy - 6 ? "auto" : ly > RADAR.cy + 6 ? "hanging" : "middle";
+    const text = svgEl("text", {
+      x: lx,
+      y: ly,
+      "text-anchor": anchor,
+      "dominant-baseline": baseline,
+      class: value === null ? "radar-label radar-label-null" : "radar-label",
+    });
+    text.textContent = value === null ? `${label} — н/д` : label;
+    radarChart.append(text);
+
+    if (value !== null) {
+      valuePoints.push(polarPoint(angle, (RADAR.r * value) / 100));
+    }
+  });
+
+  const pointsAttr = valuePoints.map((p) => p.join(",")).join(" ");
+  if (valuePoints.length >= 3) {
+    radarChart.append(
+      svgEl("polygon", { points: pointsAttr, class: "radar-value" })
+    );
+  } else if (valuePoints.length === 2) {
+    radarChart.append(
+      svgEl("polyline", { points: pointsAttr, class: "radar-value" })
+    );
+  }
+  for (const [px, py] of valuePoints) {
+    radarChart.append(svgEl("circle", { cx: px, cy: py, r: 4, class: "radar-dot" }));
+  }
+}
+
+function renderScoresList(scores) {
+  scoresList.replaceChildren();
+
+  for (const [key, label] of SCORE_AXES) {
+    const axis = scores[key] ?? {};
+    const value = axisValue(axis);
+
+    const item = document.createElement("details");
+    item.className = "score-item";
+
+    const summary = document.createElement("summary");
+    const name = document.createElement("span");
+    name.className = "score-name";
+    name.textContent = label;
+    const valueEl = document.createElement("span");
+    valueEl.className =
+      value === null ? "score-value score-value-nd" : "score-value";
+    valueEl.textContent = value === null ? "н/д" : String(value);
+    summary.append(name, valueEl);
+    item.append(summary);
+
+    const basisList = document.createElement("ul");
+    basisList.className = "score-basis";
+    const basis =
+      Array.isArray(axis.basis) && axis.basis.length ? axis.basis : ["—"];
+    for (const line of basis) {
+      const li = document.createElement("li");
+      li.textContent = String(line);
+      basisList.append(li);
+    }
+    item.append(basisList);
+
+    scoresList.append(item);
+  }
+}
+
+function renderScores(scores) {
+  if (!scores || typeof scores !== "object") {
+    scoresPanel.classList.add("is-hidden");
+    return;
+  }
+  drawRadar(scores);
+  renderScoresList(scores);
+  scoresPanel.classList.remove("is-hidden");
+}
+
 function showResult(data) {
   resultCompany.textContent = data.company;
   reportLink.href = data.report_url;
@@ -29,6 +179,7 @@ function showResult(data) {
   } else {
     evidenceLink.classList.add("is-hidden");
   }
+  renderScores(data.scores);
   renderMarkdownReport(data.report);
   resultCard.classList.remove("is-hidden");
 }
@@ -156,6 +307,7 @@ async function buildHealthCheck(candidate, buttonEl) {
       report_url: data.report_url,
       evidence_url: data.evidence_url,
       report: data.report,
+      scores: data.scores,
     });
     setResolverStatus(`Отчёт готов: ${data.report_file}`);
     resultCard.scrollIntoView({ behavior: "smooth" });

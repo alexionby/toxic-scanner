@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Toxic Scanner</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=5" />
+    <link rel="stylesheet" href="/static/styles.css?v=7" />
   </head>
   <body>
     <main class="shell">
@@ -58,12 +58,23 @@
           </div>
         </div>
 
+        <div id="scores-panel" class="scores-panel is-hidden">
+          <svg
+            id="radar-chart"
+            class="radar-chart"
+            viewBox="0 0 420 300"
+            role="img"
+            aria-label="Звезда качества: пять осей оценки компании"
+          ></svg>
+          <div id="scores-list" class="scores-list"></div>
+        </div>
+
         <div id="report-output" class="report-html"></div>
       </section>
     </main>
 
     <script src="/static/vendor/marked-15.0.12.min.js"></script>
     <script src="/static/vendor/purify-3.2.6.min.js"></script>
-    <script src="/static/app.js?v=5"></script>
+    <script src="/static/app.js?v=7"></script>
   </body>
 </html>

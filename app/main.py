@@ -126,6 +126,7 @@ async def company_health_check_endpoint(krs: str, http_request: Request):
         "company": company.model_dump(),
         "status": "success",
         "report": result.report_markdown,
+        "scores": result.scores,
         "report_file": str(report_path),
         "report_url": str(http_request.url_for("get_report", filename=report_path.name)),
         "evidence_file": str(evidence_path),

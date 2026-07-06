@@ -21,6 +21,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_tavily import TavilySearch
 from langgraph.prebuilt import create_react_agent
 
+from app import scoring
 from app.models import CompanyCandidate
 
 
@@ -109,6 +110,19 @@ FINANCIAL_SYSTEM_PROMPT = """\
 - **Качество данных**: какие источники нашлись, чего не хватает
 - **Источники**: список URL
 - **Что проверить перед подписанием контракта**: список
+
+После отчёта, отдельной ПОСЛЕДНЕЙ строкой (одна строка, без
+код-блока и без текста после неё), выдай машиночитаемый JSON ровно
+такого вида:
+{"finances": {"value": 0-100 или null, "basis": ["..."]}, "people": {"value": 0-100 или null, "basis": ["..."]}}
+- finances - оценка финансового здоровья ТОЛЬКО по реально найденным
+  цифрам; если цифр не нашлось, value обязан быть null.
+- people - оценка климата ТОЛЬКО по реально найденным отзывам
+  сотрудников; если отзывов не нашлось, value обязан быть null.
+- basis - 1-4 короткие строки, каждая опирается на конкретный
+  найденный факт или источник; для null объясни, чего не хватило.
+Не выдумывай значение ради заполнения: null с объяснением лучше
+угаданного числа.
 """
 
 _agent = None
@@ -182,22 +196,29 @@ def _task_prompt(company: CompanyCandidate) -> str:
 class HealthCheckResult:
     report_markdown: str
     evidence: dict
+    scores: dict
 
 
 def run_health_check(company: CompanyCandidate) -> HealthCheckResult:
     agent = _get_agent()
     result = agent.invoke({"messages": [HumanMessage(content=_task_prompt(company))]})
     messages = result["messages"]
-    report = message_content_to_text(messages[-1].content)
+    raw_report = message_content_to_text(messages[-1].content)
+
+    # JSON-блок с осями finances/people агент выдаёт в хвосте ответа;
+    # в отчёт для человека он попасть не должен.
+    report, llm_axes = scoring.split_llm_scores(raw_report)
+    scores = scoring.build_scores(company, llm_axes)
 
     evidence = {
         "schema": "toxic-scanner/health-check-evidence/v0",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "company": company.model_dump(),
         "data_confidence": "secondary_sources",
+        "scores": scores,
         "agent_trace": _messages_to_trace(messages),
     }
-    return HealthCheckResult(report_markdown=report, evidence=evidence)
+    return HealthCheckResult(report_markdown=report, evidence=evidence, scores=scores)
 
 
 def _messages_to_trace(messages: list) -> list[dict]:
