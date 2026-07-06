@@ -1,12 +1,12 @@
-"""Звезда качества v1 - пять осей оценки работодателя.
+"""Звезда качества v2 - пять осей оценки работодателя.
 
 Каждая ось: {"value": int 0-100 | None, "basis": list[str]}.
 value=None - честное "нет данных" (на радаре ось серым пунктиром),
-НИКОГДА не "50 из 100". Надёжность и прозрачность считаются
-детерминированными формулами из фактов одписа KRS; финансы и людей
-оценивает LLM-агент (блок парсится из хвоста его ответа); ось
-"будущее" зарезервирована. Веса v1 - произвольные, важен детерминизм
-и объяснимость: каждое начисление - строка в basis.
+НИКОГДА не "50 из 100". Надёжность, прозрачность, финансы и динамика
+считаются детерминированными формулами (одпис KRS + финансовый
+адаптер); LLM-агент оценивает только "людей" (интерпретация отзывов).
+Веса v1 - произвольные, важны детерминизм и объяснимость: каждое
+начисление - строка в basis.
 """
 
 from __future__ import annotations
@@ -16,10 +16,11 @@ import re
 from datetime import date
 
 from app.models import CompanyCandidate
+from app.sources.financials import FinancialsResult
 
 Axis = dict  # {"value": int | None, "basis": list[str]}
 
-LLM_AXES = ("finances", "people")
+LLM_AXES = ("people",)
 
 _NO_ODPIS_BASIS = ["нет одписа KRS"]
 _NO_LLM_BASIS = ["оценка не получена от агента"]
@@ -184,8 +185,99 @@ def transparency(company: CompanyCandidate, today: date | None = None) -> Axis:
     return {"value": value, "basis": basis}
 
 
-def future_readiness() -> Axis:
-    return _no_data_axis(["в разработке - появится с отраслевым анализом"])
+def _fmt_pln(value: float) -> str:
+    return f"{value:,.0f} PLN".replace(",", " ")
+
+
+def _latest_with(years: list, attr: str):
+    """Самый свежий год, где заполнено поле attr."""
+    for yf in sorted(years, key=lambda y: y.year, reverse=True):
+        if getattr(yf, attr) is not None:
+            return yf
+    return None
+
+
+def finances(fin: FinancialsResult) -> Axis:
+    """Финансовое здоровье: прибыльность, капитал, долговая нагрузка."""
+    if not fin.has_data:
+        return _no_data_axis(["финансовые данные в агрегаторах не найдены"])
+
+    value = 0
+    basis: list[str] = []
+
+    profit_year = _latest_with(fin.years, "net_profit")
+    if profit_year is None:
+        basis.append("чистая прибыль неизвестна: +0")
+    elif profit_year.net_profit > 0:
+        value += 40
+        basis.append(f"прибыль в {profit_year.year} ({_fmt_pln(profit_year.net_profit)}): +40")
+        if profit_year.revenue and profit_year.net_profit / profit_year.revenue >= 0.08:
+            value += 10
+            margin = profit_year.net_profit / profit_year.revenue
+            basis.append(f"маржа {margin:.0%} (от 8%): +10")
+    else:
+        basis.append(f"убыток в {profit_year.year} ({_fmt_pln(profit_year.net_profit)}): +0")
+
+    equity_year = _latest_with(fin.years, "equity")
+    if equity_year is None:
+        basis.append("капитал неизвестен: +0")
+    elif equity_year.equity > 0:
+        value += 20
+        basis.append(f"положительный капитал в {equity_year.year}: +20")
+        if equity_year.liabilities is not None:
+            ratio = equity_year.liabilities / equity_year.equity
+            if ratio < 1:
+                pts = 20
+            elif ratio < 2:
+                pts = 12
+            elif ratio < 4:
+                pts = 6
+            else:
+                pts = 0
+            value += pts
+            basis.append(f"обязательства/капитал = {ratio:.1f}: +{pts}")
+    else:
+        basis.append(f"отрицательный капитал в {equity_year.year}: +0")
+
+    profits = [y.net_profit for y in fin.years if y.net_profit is not None]
+    if profits and all(p > 0 for p in profits):
+        value += 10
+        basis.append(f"все {len(profits)} отчётных лет прибыльны: +10")
+    elif profits:
+        losses = sum(1 for p in profits if p <= 0)
+        basis.append(f"убыточных лет: {losses}: +0")
+
+    return {"value": min(100, value), "basis": basis}
+
+
+def dynamics(fin: FinancialsResult) -> Axis:
+    """Динамика: тренд выручки и прибыли год-к-году."""
+    rev_years = sorted((y for y in fin.years if y.revenue is not None), key=lambda y: y.year)
+    if len(rev_years) < 2:
+        return _no_data_axis(["нужны данные о выручке минимум за 2 года"])
+
+    value = 50
+    basis: list[str] = []
+
+    prev, last = rev_years[-2], rev_years[-1]
+    change = (last.revenue - prev.revenue) / prev.revenue
+    points = max(-30, min(30, round(change * 150)))
+    value += points
+    basis.append(
+        f"выручка {prev.year}->{last.year}: {change:+.0%} "
+        f"({_fmt_pln(prev.revenue)} -> {_fmt_pln(last.revenue)}): {points:+d}"
+    )
+
+    prof_years = sorted((y for y in fin.years if y.net_profit is not None), key=lambda y: y.year)
+    if len(prof_years) >= 2:
+        if prof_years[-1].net_profit > prof_years[-2].net_profit:
+            value += 10
+            basis.append(f"чистая прибыль растёт ({prof_years[-1].year}): +10")
+        elif prof_years[-1].net_profit < prof_years[-2].net_profit:
+            value -= 10
+            basis.append(f"чистая прибыль падает ({prof_years[-1].year}): -10")
+
+    return {"value": max(0, min(100, value)), "basis": basis}
 
 
 def _normalize_llm_axis(raw: object) -> Axis:
@@ -249,6 +341,7 @@ def split_llm_scores(report: str) -> tuple[str, dict[str, Axis]]:
 
 def build_scores(
     company: CompanyCandidate,
+    fin: FinancialsResult,
     llm_axes: dict[str, Axis] | None = None,
     today: date | None = None,
 ) -> dict[str, Axis]:
@@ -256,8 +349,8 @@ def build_scores(
     llm_axes = llm_axes or {}
     return {
         "reliability": reliability(company, today),
-        "finances": llm_axes.get("finances", _no_data_axis(_NO_LLM_BASIS)),
+        "finances": finances(fin),
+        "dynamics": dynamics(fin),
         "people": llm_axes.get("people", _no_data_axis(_NO_LLM_BASIS)),
         "transparency": transparency(company, today),
-        "future_readiness": future_readiness(),
     }

@@ -32,9 +32,9 @@ const scoresList = document.querySelector("#scores-list");
 const SCORE_AXES = [
   ["reliability", "Надёжность"],
   ["finances", "Финансы"],
+  ["dynamics", "Динамика"],
   ["people", "Люди"],
   ["transparency", "Прозрачность"],
-  ["future_readiness", "Будущее"],
 ];
 
 // Полосы силы - способ прочтения оценки, не новая формула:
@@ -46,7 +46,7 @@ function scoreBand(value) {
   return "weak";
 }
 
-// cx с запасом под боковые подписи ("Прозрачность", "Будущее — н/д"):
+// cx с запасом под боковые подписи ("Прозрачность", "Динамика"):
 // они анкорятся снаружи осей и не должны вылезать за viewBox 420x300.
 const RADAR = { cx: 210, cy: 150, r: 95 };
 
