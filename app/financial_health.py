@@ -73,6 +73,12 @@ FINANCIAL_SYSTEM_PROMPT = """\
 Правила:
 - Юрлицо уже подтверждено по государственным реестрам, его реквизиты
   даны в задаче. Не меняй их и не "уточняй".
+- В задаче есть блок "Жёсткие факты из одписа KRS" - это первоисточник
+  (государственный реестр). Строй выводы в первую очередь на нём.
+  Польские компании обязаны сдавать годовой отчёт ежегодно: если
+  последний сданный отчёт старше двух лет - это серьёзный красный флаг.
+  Молодая компания с минимальным капиталом (5 000 PLN) без сданной
+  отчётности - признак потенциальной однодневки, скажи об этом прямо.
 - Каждый факт сопровождай ссылкой на источник, из которого ты его взял.
 - Финансовые цифры ищи на публичных агрегаторах (aleo.com, rejestr.io) -
   это вторичные источники: прямо помечай их в отчёте как
@@ -90,6 +96,8 @@ FINANCIAL_SYSTEM_PROMPT = """\
 # Health Check: <название компании>
 - **Health score**: 0-100 с одним предложением обоснования
 - **Идентификация**: KRS, NIP, REGON, адрес, статус (из задачи)
+- **Факты из реестра KRS**: дата регистрации, капитал, сдача годовой
+  отчётности, задолженности, ликвидация/банкротство - как есть из задачи
 - **Краткий вывод**: 2-4 предложения
 - **Финансовые показатели по годам**: таблица (выручка, прибыль/убыток,
   активы, капитал) со ссылками на источники; если данных нет - явно
@@ -116,6 +124,34 @@ def _get_agent():
     return _agent
 
 
+def _facts_block(company: CompanyCandidate) -> str:
+    facts = company.facts
+    if facts is None:
+        return "Жёсткие факты из одписа KRS: недоступны.\n\n"
+
+    statements = facts.annual_statements
+    if statements:
+        recent = ", ".join(s.period for s in statements[-3:])
+        statements_line = (
+            f"сдано {len(statements)} шт., последние периоды: {recent}"
+        )
+    else:
+        statements_line = "не сдавались (ни одной записи в реестре)"
+
+    return (
+        "Жёсткие факты из одписа KRS (первоисточник, приоритет над "
+        "агрегаторами):\n"
+        f"- Дата регистрации в KRS: {facts.registration_date or 'нет данных'}\n"
+        f"- Правовая форма: {facts.legal_form or 'нет данных'}\n"
+        f"- Уставный капитал: {facts.share_capital or 'нет данных'}\n"
+        f"- Годовые отчёты: {statements_line}\n"
+        f"- Задолженности/взыскания (dział 4): "
+        f"{', '.join(facts.arrears_flags) if facts.arrears_flags else 'записей нет'}\n"
+        f"- Ликвидация/банкротство (dział 6): "
+        f"{', '.join(facts.distress_flags) if facts.distress_flags else 'записей нет'}\n\n"
+    )
+
+
 def _task_prompt(company: CompanyCandidate) -> str:
     return (
         "Построй financial health check компании.\n\n"
@@ -127,6 +163,8 @@ def _task_prompt(company: CompanyCandidate) -> str:
         f"- REGON: {company.regon or 'нет'}\n"
         f"- Адрес: {company.address or 'нет'}\n"
         f"- Статус в реестре: {company.status or 'неизвестен'}\n\n"
+        + _facts_block(company)
+        +
         "Ищи финансовые данные по официальным реквизитам, а не только по "
         f"названию: например запросами 'aleo.com KRS {company.krs}', "
         f"'rejestr.io {company.krs}', '{company.name} wyniki finansowe "

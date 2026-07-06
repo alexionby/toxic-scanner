@@ -129,6 +129,25 @@ function renderCandidates(candidates) {
       ["Источник", candidate.source],
       ["Confidence", candidate.confidence],
     ];
+
+    const facts = candidate.facts;
+    if (facts) {
+      const statements = facts.annual_statements ?? [];
+      const statementsText = statements.length
+        ? `сдано ${statements.length}, последний: ${facts.last_statement_period}`
+        : "не сдавались — риск";
+      fields.push(
+        ["Регистрация", facts.registration_date],
+        ["Капитал", facts.share_capital],
+        ["Отчётность", statementsText]
+      );
+      if ((facts.distress_flags ?? []).length) {
+        fields.push(["⚠ Dział 6", facts.distress_flags.join(", ")]);
+      }
+      if ((facts.arrears_flags ?? []).length) {
+        fields.push(["⚠ Dział 4", facts.arrears_flags.join(", ")]);
+      }
+    }
     for (const [label, value] of fields) {
       const dt = document.createElement("dt");
       dt.textContent = label;

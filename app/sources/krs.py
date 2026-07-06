@@ -92,5 +92,55 @@ def _parse_odpis(krs_number: str, payload: dict) -> RawCompanyHit:
         regon=regon,
         address=address,
         status=status,
+        facts=_extract_facts(payload),
         raw=payload,
     )
+
+
+def _extract_facts(payload: dict) -> dict:
+    """Жёсткие факты из одписа: возраст, капитал, отчётность, флаги.
+
+    Структура сверена с живыми ответами API (CD Projekt 0000006865,
+    MPSYSTEM 0000475078, 2026-07-06).
+    """
+    odpis = payload.get("odpis", {})
+    naglowek = odpis.get("naglowekA", {})
+    dane = odpis.get("dane", {})
+    dzial1 = dane.get("dzial1", {})
+
+    kapital = dzial1.get("kapital", {}).get("wysokoscKapitaluZakladowego", {})
+    share_capital = None
+    if kapital.get("wartosc"):
+        share_capital = f"{kapital['wartosc']} {kapital.get('waluta', '')}".strip()
+
+    wzmianki = (
+        dane.get("dzial3", {})
+        .get("wzmiankiOZlozonychDokumentach", {})
+        .get("wzmiankaOZlozeniuRocznegoSprawozdaniaFinansowego", [])
+    )
+    statements = [
+        {"filed_at": w.get("dataZlozenia", ""), "period": w.get("zaOkresOdDo", "")}
+        for w in wzmianki
+        if isinstance(w, dict)
+    ]
+
+    # dzial6 содержит и безобидные записи (слияния/преобразования),
+    # поэтому флагуем только ключи про ликвидацию/банкротство/роспуск.
+    distress_patterns = ("likwid", "upadl", "rozwiaz", "wykresl", "zawiesz", "restruktur")
+    distress_flags = [
+        key
+        for key, value in dane.get("dzial6", {}).items()
+        if value and any(p in key.lower() for p in distress_patterns)
+    ]
+
+    arrears_flags = [key for key, value in dane.get("dzial4", {}).items() if value]
+
+    return {
+        "registration_date": naglowek.get("dataRejestracjiWKRS"),
+        "legal_form": dzial1.get("danePodmiotu", {}).get("formaPrawna"),
+        "share_capital": share_capital,
+        "annual_statements": statements,
+        "last_statement_period": statements[-1]["period"] if statements else None,
+        "arrears_flags": arrears_flags,
+        "distress_flags": distress_flags,
+    }

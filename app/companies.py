@@ -42,4 +42,5 @@ def _to_candidate(hit: RawCompanyHit) -> CompanyCandidate:
         address=hit.address,
         status=hit.status,
         confidence=1.0,
+        facts=hit.facts,
     )

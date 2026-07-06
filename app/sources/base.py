@@ -23,6 +23,7 @@ class RawCompanyHit:
     regon: str | None = None
     address: str | None = None
     status: str | None = None
+    facts: dict | None = None
     raw: dict = field(default_factory=dict)
 
 
