@@ -216,3 +216,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Claude Code local (personal, machine-specific) overrides
+.claude/settings.local.json
+
+# Runtime logs and browser test artifacts
+logs/
+.playwright-mcp/
