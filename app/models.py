@@ -25,6 +25,7 @@ class CompanyFacts(BaseModel):
     registration_date: str | None = None
     legal_form: str | None = None
     share_capital: str | None = None
+    main_activity: str | None = None  # dzial3: ведущий PKD с описанием
     annual_statements: list[FiledStatement] = []
     last_statement_period: str | None = None
     arrears_flags: list[str] = []  # dzial4: задолженности/взыскания

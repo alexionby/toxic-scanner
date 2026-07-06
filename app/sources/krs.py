@@ -113,10 +113,23 @@ def _extract_facts(payload: dict) -> dict:
     if kapital.get("wartosc"):
         share_capital = f"{kapital['wartosc']} {kapital.get('waluta', '')}".strip()
 
-    wzmianki = (
-        dane.get("dzial3", {})
-        .get("wzmiankiOZlozonychDokumentach", {})
-        .get("wzmiankaOZlozeniuRocznegoSprawozdaniaFinansowego", [])
+    dzial3 = dane.get("dzial3", {})
+    pkd_main = dzial3.get("przedmiotDzialalnosci", {}).get(
+        "przedmiotPrzewazajacejDzialalnosci", []
+    )
+    main_activity = None
+    if isinstance(pkd_main, list) and pkd_main:
+        first = pkd_main[0]
+        code = ".".join(
+            part
+            for part in (first.get("kodDzial"), first.get("kodKlasa"), first.get("kodPodklasa"))
+            if part
+        )
+        if first.get("opis"):
+            main_activity = f"{first['opis']} (PKD {code})" if code else first["opis"]
+
+    wzmianki = dzial3.get("wzmiankiOZlozonychDokumentach", {}).get(
+        "wzmiankaOZlozeniuRocznegoSprawozdaniaFinansowego", []
     )
     statements = [
         {"filed_at": w.get("dataZlozenia", ""), "period": w.get("zaOkresOdDo", "")}
@@ -139,6 +152,7 @@ def _extract_facts(payload: dict) -> dict:
         "registration_date": naglowek.get("dataRejestracjiWKRS"),
         "legal_form": dzial1.get("danePodmiotu", {}).get("formaPrawna"),
         "share_capital": share_capital,
+        "main_activity": main_activity,
         "annual_statements": statements,
         "last_statement_period": statements[-1]["period"] if statements else None,
         "arrears_flags": arrears_flags,
