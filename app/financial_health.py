@@ -21,8 +21,11 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_tavily import TavilySearch
 from langgraph.prebuilt import create_react_agent
 
+from dataclasses import asdict
+
 from app import scoring
 from app.models import CompanyCandidate
+from app.sources.financials import FinancialsResult, get_financials
 
 
 def message_content_to_text(content: object) -> str:
@@ -166,7 +169,35 @@ def _facts_block(company: CompanyCandidate) -> str:
     )
 
 
-def _task_prompt(company: CompanyCandidate) -> str:
+def _financials_block(fin: FinancialsResult) -> str:
+    """Готовые цифры из адаптера - приоритетнее гугла, если есть."""
+    if not fin.has_data:
+        return (
+            "Готовые финансовые показатели из агрегаторов не найдены - "
+            "поищи их сам (см. ниже).\n\n"
+        )
+
+    lines = [
+        "Финансовые показатели по годам (источник: "
+        f"{', '.join(fin.sources)}, вторичный - агрегаторы официального "
+        "реестра). ИСПОЛЬЗУЙ ИХ как основную финансовую таблицу отчёта, "
+        "не ищи эти цифры заново:"
+    ]
+    for y in fin.years:
+        def money(v: float | None) -> str:
+            return f"{v:,.0f} PLN".replace(",", " ") if v is not None else "нет данных"
+
+        lines.append(
+            f"- {y.year}: выручка {money(y.revenue)}; "
+            f"чистая прибыль {money(y.net_profit)}; "
+            f"капитал {money(y.equity)}; обязательства {money(y.liabilities)}"
+        )
+    if fin.cross_check:
+        lines.append("Сверка источников: " + "; ".join(fin.cross_check))
+    return "\n".join(lines) + "\n\n"
+
+
+def _task_prompt(company: CompanyCandidate, fin: FinancialsResult) -> str:
     return (
         "Построй financial health check компании.\n\n"
         "Официальные данные (подтверждены государственными реестрами, "
@@ -178,9 +209,10 @@ def _task_prompt(company: CompanyCandidate) -> str:
         f"- Адрес: {company.address or 'нет'}\n"
         f"- Статус в реестре: {company.status or 'неизвестен'}\n\n"
         + _facts_block(company)
+        + _financials_block(fin)
         +
-        "Ищи финансовые данные по официальным реквизитам, а не только по "
-        f"названию: например запросами 'aleo.com KRS {company.krs}', "
+        "Если каких-то финансовых цифр выше не хватает, можешь поискать "
+        f"их по официальным реквизитам: 'aleo.com KRS {company.krs}', "
         f"'rejestr.io {company.krs}', '{company.name} wyniki finansowe "
         "przychody'. Найденные страницы агрегаторов читай целиком.\n\n"
         "Затем собери отзывы сотрудников: найди профиль компании на "
@@ -200,8 +232,14 @@ class HealthCheckResult:
 
 
 def run_health_check(company: CompanyCandidate) -> HealthCheckResult:
+    # Реальные цифры из агрегаторов тянем детерминированно ДО агента,
+    # чтобы он строил финтаблицу из них, а не искал их в вебе.
+    fin = get_financials(company.name, company.krs or "")
+
     agent = _get_agent()
-    result = agent.invoke({"messages": [HumanMessage(content=_task_prompt(company))]})
+    result = agent.invoke(
+        {"messages": [HumanMessage(content=_task_prompt(company, fin))]}
+    )
     messages = result["messages"]
     raw_report = message_content_to_text(messages[-1].content)
 
@@ -215,6 +253,7 @@ def run_health_check(company: CompanyCandidate) -> HealthCheckResult:
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "company": company.model_dump(),
         "data_confidence": "secondary_sources",
+        "financials": asdict(fin),
         "scores": scores,
         "agent_trace": _messages_to_trace(messages),
     }
