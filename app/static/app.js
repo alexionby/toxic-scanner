@@ -248,6 +248,17 @@ const resolverStatus = document.querySelector("#resolver-status");
 const resolverResult = document.querySelector("#resolver-result");
 const resolverRaw = document.querySelector("#resolver-raw");
 const resolverRawOutput = document.querySelector("#resolver-raw-output");
+const onboarding = document.querySelector("#onboarding");
+
+// Кнопки-примеры в пустом состоянии: подставляют KRS и сразу ищут
+for (const button of document.querySelectorAll(".example-button")) {
+  button.addEventListener("click", () => {
+    resolverName.value = "";
+    resolverNip.value = "";
+    resolverKrs.value = button.dataset.krs;
+    resolverForm.requestSubmit();
+  });
+}
 
 function showRawResponse(text) {
   resolverRawOutput.textContent = text;
@@ -320,6 +331,10 @@ function renderCandidates(candidates) {
       dt.textContent = label;
       const dd = document.createElement("dd");
       dd.textContent = value ?? "—";
+      // Реестровые номера сверяют посимвольно с офертой - моноширинным
+      if (["KRS", "NIP", "REGON"].includes(label)) {
+        dd.classList.add("mono");
+      }
       details.append(dt, dd);
     }
 
@@ -417,6 +432,7 @@ resolverForm.addEventListener("submit", async (event) => {
   resolverResult.replaceChildren();
   resolverRaw.classList.add("is-hidden");
   resolverRawOutput.textContent = "";
+  onboarding.classList.add("is-hidden");
 
   try {
     const response = await fetch("/companies/search", {

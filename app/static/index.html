@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Toxic Scanner</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=10" />
+    <link rel="stylesheet" href="/static/styles.css?v=11" />
   </head>
   <body>
     <main class="shell">
@@ -42,6 +42,32 @@
 
         <div id="resolver-status" class="status" role="status" aria-live="polite">
           Введите название компании — или сразу NIP/KRS, если знаете.
+        </div>
+
+        <div id="onboarding" class="onboarding">
+          <ol class="onboarding-steps">
+            <li>
+              <strong>Найдите компанию</strong> — по названию или сразу по
+              номеру NIP/KRS из оферты.
+            </li>
+            <li>
+              <strong>Сверьте реквизиты</strong> с договором и подтвердите,
+              что это она.
+            </li>
+            <li>
+              <strong>Постройте отчёт</strong> — звезда качества и факты из
+              государственных реестров.
+            </li>
+          </ol>
+          <div class="onboarding-examples">
+            <span class="onboarding-try">Попробуйте на живых данных:</span>
+            <button type="button" class="example-button" data-krs="0000006865">
+              CD PROJEKT S.A. — крупная
+            </button>
+            <button type="button" class="example-button" data-krs="0000475078">
+              MPSYSTEM sp. z o.o. — небольшая
+            </button>
+          </div>
         </div>
 
         <div id="resolver-result" class="candidate-list"></div>
@@ -99,6 +125,6 @@
 
     <script src="/static/vendor/marked-15.0.12.min.js"></script>
     <script src="/static/vendor/purify-3.2.6.min.js"></script>
-    <script src="/static/app.js?v=10"></script>
+    <script src="/static/app.js?v=11"></script>
   </body>
 </html>

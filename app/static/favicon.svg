@@ -1,3 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <text x="50" y="50" font-size="80" text-anchor="middle" dominant-baseline="central">&#x2623;&#xFE0F;</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#0f766e"/>
+  <!-- внешний пентагон - сетка радара -->
+  <polygon points="16,5 26.5,12.6 22.5,24.9 9.5,24.9 5.5,12.6"
+           fill="none" stroke="#ffffff" stroke-width="1.6" opacity="0.45"/>
+  <!-- неровный полигон значений - звезда качества -->
+  <polygon points="16,6 23.6,13.5 18.9,20 10.7,23.3 9.3,13.8"
+           fill="#ffffff" opacity="0.92"/>
 </svg>

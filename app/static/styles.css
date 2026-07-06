@@ -151,6 +151,75 @@ button:disabled {
   color: var(--danger);
 }
 
+.onboarding {
+  margin-top: 16px;
+  padding: 18px 20px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.onboarding-steps {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+  counter-reset: onboarding;
+  color: #344054;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.onboarding-steps li {
+  position: relative;
+  padding-left: 34px;
+  counter-increment: onboarding;
+}
+
+.onboarding-steps li::before {
+  content: counter(onboarding);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 22px;
+  height: 22px;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  color: var(--accent-dark);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 20px;
+  text-align: center;
+}
+
+.onboarding-examples {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.onboarding-try {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.example-button {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--accent-dark);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.example-button:hover {
+  background: rgba(15, 118, 110, 0.08);
+}
+
 .result-panel {
   margin-top: 18px;
   overflow: hidden;
@@ -643,19 +712,29 @@ polyline.radar-value {
   flex-shrink: 0;
 }
 
+/* Статус из реестра - как штамп на документе: контур, разрядка */
 .badge {
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: rgba(15, 118, 110, 0.12);
+  padding: 2px 9px;
+  border: 1.5px solid currentColor;
+  border-radius: 4px;
+  background: transparent;
   color: var(--accent-dark);
-  font-size: 12px;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .badge-confirm {
-  background: rgba(217, 119, 6, 0.14);
   color: #92400e;
+}
+
+.mono {
+  font-family:
+    "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+  letter-spacing: 0.03em;
+  font-variant-numeric: tabular-nums;
 }
 
 .label-hint {
