@@ -165,18 +165,130 @@ button:disabled {
   min-height: 42px;
 }
 
-.report-output {
+.report-html {
   max-height: 62vh;
   margin: 0;
   padding: 24px;
   overflow: auto;
   background: #fbfcfd;
   color: #1d2939;
+  font-size: 15px;
+  line-height: 1.65;
+}
+
+.report-html > :first-child {
+  margin-top: 0;
+}
+
+.report-html h1,
+.report-html h2,
+.report-html h3,
+.report-html h4 {
+  margin: 1.4em 0 0.5em;
+  color: var(--text);
+  line-height: 1.25;
+}
+
+.report-html h1 {
+  font-size: 24px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.report-html h2 {
+  font-size: 20px;
+}
+
+.report-html h3 {
+  font-size: 17px;
+}
+
+.report-html h4 {
+  font-size: 15px;
+}
+
+.report-html p {
+  margin: 0.6em 0;
+}
+
+.report-html ul,
+.report-html ol {
+  margin: 0.6em 0;
+  padding-left: 26px;
+}
+
+.report-html li {
+  margin: 0.25em 0;
+}
+
+.report-html a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.report-html a:hover {
+  color: var(--accent-dark);
+}
+
+.report-html table {
+  width: 100%;
+  margin: 1em 0;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.report-html th,
+.report-html td {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.report-html th {
+  background: rgba(15, 118, 110, 0.08);
+  font-weight: 700;
+}
+
+.report-html tbody tr:nth-child(even) {
+  background: #f2f4f7;
+}
+
+.report-html blockquote {
+  margin: 0.8em 0;
+  padding: 4px 16px;
+  border-left: 3px solid var(--accent);
+  background: rgba(15, 118, 110, 0.06);
+  border-radius: 0 8px 8px 0;
+  color: #344054;
+}
+
+.report-html code {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: #eef1f4;
   font-family:
     "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 14px;
-  line-height: 1.6;
-  white-space: pre-wrap;
+  font-size: 13px;
+}
+
+.report-html pre {
+  padding: 14px;
+  border-radius: 8px;
+  background: #eef1f4;
+  overflow: auto;
+}
+
+.report-html pre code {
+  padding: 0;
+  background: none;
+}
+
+.report-html hr {
+  margin: 1.4em 0;
+  border: 0;
+  border-top: 1px solid var(--border);
 }
 
 .is-hidden {
@@ -210,10 +322,6 @@ button:disabled {
   .report-link {
     width: 100%;
   }
-}
-
-.resolver-panel {
-  margin-top: 18px;
 }
 
 .two-cols {
