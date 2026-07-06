@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
 
 from app.models import CompanyCandidate, CompanyQuery
@@ -17,6 +18,12 @@ from app.sources import krs, vat_whitelist, web_search
 from app.sources.base import RawCompanyHit
 
 logger = logging.getLogger(__name__)
+
+# Сырых результатов запрашиваем с запасом: часть сниппетов без KRS/NIP,
+# часть не подтверждается реестром, часть - дубли одной компании.
+RAW_HITS_LIMIT = 10
+MAX_CANDIDATES = 5
+_VERIFY_WORKERS = 5
 
 # Токены орг.-правовых форм не несут сигнала при сравнении названий:
 # "MPSYSTEM SP. Z O.O." должно совпадать с запросом "mpsystem".
@@ -53,31 +60,48 @@ def resolve_company(query: CompanyQuery) -> list[CompanyCandidate]:
 def _resolve_by_name(company_name: str, country: str) -> list[CompanyCandidate]:
     """Discovery по названию: web search -> верификация каждой находки."""
     try:
-        hits = web_search.search_company_candidates(company_name, country)
+        hits = web_search.search_company_candidates(
+            company_name, country, max_results=RAW_HITS_LIMIT
+        )
     except Exception:
         logger.warning("Web search failed for %r", company_name, exc_info=True)
         return []
 
-    candidates: list[CompanyCandidate] = []
+    unique_hits: list[RawCompanyHit] = []
     seen: set[str] = set()
     for hit in hits:
-        if _dedup_key(hit) in seen:
+        key = _dedup_key(hit)
+        if key in seen:
             continue
+        seen.add(key)
+        unique_hits.append(hit)
 
-        verified = _verify_hit(hit)
+    if not unique_hits:
+        return []
+
+    # Верификация - это 1-2 HTTP-вызова на кандидата; последовательно
+    # 10 кандидатов ждали бы слишком долго для интерактивного поиска.
+    with ThreadPoolExecutor(max_workers=_VERIFY_WORKERS) as pool:
+        verified_hits = list(pool.map(_verify_hit, unique_hits))
+
+    # Повторная дедупликация: разные сниппеты (KRS у одного, NIP у
+    # другого) могут разрешиться в одну и ту же компанию.
+    candidates: list[CompanyCandidate] = []
+    accepted: set[str] = set()
+    for verified in verified_hits:
         if verified is None:
             continue  # в официальных реестрах не подтвердилось - отбрасываем
 
         key = _dedup_key(verified)
-        if key in seen:
+        if key in accepted:
             continue
-        seen.update({key, _dedup_key(hit)})
+        accepted.add(key)
 
         confidence = _name_confidence(company_name, verified.name)
         candidates.append(_to_candidate(verified, confidence=confidence))
 
     candidates.sort(key=lambda c: c.confidence, reverse=True)
-    return candidates
+    return candidates[:MAX_CANDIDATES]
 
 
 def _verify_hit(hit: RawCompanyHit) -> RawCompanyHit | None:
