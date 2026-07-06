@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Toxic Scanner</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=11" />
+    <link rel="stylesheet" href="/static/styles.css?v=12" />
   </head>
   <body>
     <main class="shell">
@@ -78,6 +78,23 @@
         </details>
       </section>
 
+      <section id="waiting-card" class="result-panel waiting-card is-hidden" aria-live="polite">
+        <div class="waiting-body">
+          <svg
+            id="waiting-radar"
+            class="radar-chart waiting-radar"
+            viewBox="0 0 460 300"
+            aria-hidden="true"
+          ></svg>
+          <div>
+            <p class="eyebrow">Строю отчёт</p>
+            <h2 id="waiting-company" class="waiting-company">Компания</h2>
+            <ol id="waiting-stages" class="waiting-stages"></ol>
+            <p id="waiting-elapsed" class="waiting-elapsed"></p>
+          </div>
+        </div>
+      </section>
+
       <section id="result-card" class="result-panel is-hidden">
         <div class="result-header">
           <div>
@@ -125,6 +142,6 @@
 
     <script src="/static/vendor/marked-15.0.12.min.js"></script>
     <script src="/static/vendor/purify-3.2.6.min.js"></script>
-    <script src="/static/app.js?v=11"></script>
+    <script src="/static/app.js?v=12"></script>
   </body>
 </html>

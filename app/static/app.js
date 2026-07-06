@@ -359,14 +359,120 @@ function renderCandidates(candidates) {
   }
 }
 
+// --- Сцена ожидания отчёта ---
+// Агент работает 30-120 секунд. Этапы совпадают с реальным порядком
+// работы бэкенда (одпис уже есть -> финансы адаптером -> отзывы ->
+// оси); тайминги переключения - клиентская оценка, поэтому последний
+// этап никогда не помечается выполненным до прихода ответа.
+
+const waitingCard = document.querySelector("#waiting-card");
+const waitingRadar = document.querySelector("#waiting-radar");
+const waitingCompany = document.querySelector("#waiting-company");
+const waitingStages = document.querySelector("#waiting-stages");
+const waitingElapsed = document.querySelector("#waiting-elapsed");
+
+const WAIT_STAGES = [
+  { text: "Читаю одпис KRS — государственный реестр", at: 0 },
+  { text: "Собираю финансовые показатели с агрегаторов", at: 4 },
+  { text: "Ищу отзывы сотрудников: GoWork, Reddit", at: 25 },
+  { text: "Считаю оси звезды и собираю отчёт", at: 80 },
+];
+
+let waitingTimer = null;
+
+function drawSkeletonRadar() {
+  waitingRadar.replaceChildren();
+  for (const level of [25, 50, 75, 100]) {
+    const points = SCORE_AXES.map((_, i) =>
+      polarPoint(axisAngle(i), (RADAR.r * level) / 100).join(",")
+    ).join(" ");
+    waitingRadar.append(svgEl("polygon", { points, class: "radar-grid" }));
+  }
+  SCORE_AXES.forEach(([, label], i) => {
+    const angle = axisAngle(i);
+    const [x2, y2] = polarPoint(angle, RADAR.r);
+    waitingRadar.append(
+      svgEl("line", {
+        x1: RADAR.cx,
+        y1: RADAR.cy,
+        x2,
+        y2,
+        class: "radar-axis radar-axis-null",
+      })
+    );
+    const [lx, ly] = polarPoint(angle, RADAR.r + 16);
+    const anchor =
+      Math.abs(lx - RADAR.cx) < 6 ? "middle" : lx > RADAR.cx ? "start" : "end";
+    const baseline =
+      ly < RADAR.cy - 6 ? "auto" : ly > RADAR.cy + 6 ? "hanging" : "middle";
+    const text = svgEl("text", {
+      x: lx,
+      y: ly,
+      "text-anchor": anchor,
+      "dominant-baseline": baseline,
+      class: "radar-label radar-label-null",
+    });
+    text.textContent = label;
+    waitingRadar.append(text);
+  });
+}
+
+function renderWaitingStages(elapsedSeconds) {
+  const items = waitingStages.children;
+  WAIT_STAGES.forEach((stage, i) => {
+    const next = WAIT_STAGES[i + 1];
+    // последний этап закрывает только реальный ответ сервера
+    const done = next ? elapsedSeconds >= next.at : false;
+    const current = !done && elapsedSeconds >= stage.at;
+    const li = items[i];
+    li.className = done
+      ? "waiting-stage waiting-stage--done"
+      : current
+        ? "waiting-stage waiting-stage--current"
+        : "waiting-stage";
+  });
+}
+
+function startWaiting(companyName) {
+  waitingCompany.textContent = companyName;
+  drawSkeletonRadar();
+
+  waitingStages.replaceChildren();
+  for (const stage of WAIT_STAGES) {
+    const li = document.createElement("li");
+    li.className = "waiting-stage";
+    li.textContent = stage.text;
+    waitingStages.append(li);
+  }
+
+  const startedAt = Date.now();
+  const tick = () => {
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+    waitingElapsed.textContent = `идёт ${elapsed} с · обычно 30–120 секунд`;
+    renderWaitingStages(elapsed);
+  };
+  tick();
+  waitingTimer = setInterval(tick, 1000);
+
+  waitingCard.classList.remove("is-hidden");
+  waitingCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function stopWaiting() {
+  if (waitingTimer !== null) {
+    clearInterval(waitingTimer);
+    waitingTimer = null;
+  }
+  waitingCard.classList.add("is-hidden");
+}
+
 async function buildHealthCheck(candidate, buttonEl) {
   const idleLabel = buttonEl.textContent;
   buttonEl.disabled = true;
   buttonEl.textContent = "Строю отчёт...";
-  setResolverStatus(
-    "Строю отчёт. Обычно это занимает от 30 секунд до пары минут."
-  );
+  setResolverStatus("Строю отчёт...");
   resultCard.classList.add("is-hidden");
+  startWaiting(candidate.name);
 
   try {
     const response = await fetch(
@@ -401,6 +507,7 @@ async function buildHealthCheck(candidate, buttonEl) {
   } catch (error) {
     setResolverStatus(error.message, true);
   } finally {
+    stopWaiting();
     buttonEl.disabled = false;
     buttonEl.textContent = idleLabel;
   }

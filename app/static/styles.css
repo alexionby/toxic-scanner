@@ -555,6 +555,92 @@ polyline.radar-value {
   }
 }
 
+.waiting-card {
+  padding: 22px 24px;
+}
+
+.waiting-body {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 24px;
+  align-items: center;
+}
+
+.waiting-company {
+  margin-bottom: 16px;
+}
+
+.waiting-stages {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.waiting-stage {
+  position: relative;
+  padding-left: 26px;
+  transition: color 0.3s;
+}
+
+.waiting-stage::before {
+  content: "○";
+  position: absolute;
+  left: 2px;
+  color: var(--band-nd);
+}
+
+.waiting-stage--current {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.waiting-stage--current::before {
+  content: "●";
+  color: var(--accent);
+}
+
+.waiting-stage--done {
+  color: #344054;
+}
+
+.waiting-stage--done::before {
+  content: "✓";
+  color: var(--accent-dark);
+  font-weight: 800;
+}
+
+.waiting-elapsed {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .waiting-radar {
+    animation: waiting-pulse 2.4s ease-in-out infinite;
+  }
+
+  .waiting-stage--current::before {
+    animation: waiting-pulse 1.2s ease-in-out infinite;
+  }
+}
+
+@keyframes waiting-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
 .scores-list {
   display: grid;
   gap: 8px;
@@ -672,7 +758,8 @@ polyline.radar-value {
     width: 100%;
   }
 
-  .scores-body {
+  .scores-body,
+  .waiting-body {
     grid-template-columns: 1fr;
   }
 }
