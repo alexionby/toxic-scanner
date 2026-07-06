@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Toxic Scanner</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=7" />
+    <link rel="stylesheet" href="/static/styles.css?v=8" />
   </head>
   <body>
     <main class="shell">
@@ -59,14 +59,28 @@
         </div>
 
         <div id="scores-panel" class="scores-panel is-hidden">
-          <svg
-            id="radar-chart"
-            class="radar-chart"
-            viewBox="0 0 420 300"
-            role="img"
-            aria-label="Звезда качества: пять осей оценки компании"
-          ></svg>
-          <div id="scores-list" class="scores-list"></div>
+          <div class="scores-head">
+            <p class="eyebrow">Звезда качества</p>
+            <p id="scores-verdict" class="scores-verdict"></p>
+          </div>
+          <div class="scores-body">
+            <div class="radar-wrap">
+              <svg
+                id="radar-chart"
+                class="radar-chart"
+                viewBox="0 0 420 300"
+                role="img"
+                aria-label="Звезда качества: пять осей оценки компании"
+              ></svg>
+              <p class="radar-legend">
+                <span class="legend-item"><span class="legend-dot legend-dot--strong"></span>70+ сильно</span>
+                <span class="legend-item"><span class="legend-dot legend-dot--mid"></span>40–69 средне</span>
+                <span class="legend-item"><span class="legend-dot legend-dot--weak"></span>до 40 слабо</span>
+                <span class="legend-item"><span class="legend-dot legend-dot--nd"></span>н/д — нет данных</span>
+              </p>
+            </div>
+            <div id="scores-list" class="scores-list"></div>
+          </div>
         </div>
 
         <div id="report-output" class="report-html"></div>
@@ -75,6 +89,6 @@
 
     <script src="/static/vendor/marked-15.0.12.min.js"></script>
     <script src="/static/vendor/purify-3.2.6.min.js"></script>
-    <script src="/static/app.js?v=7"></script>
+    <script src="/static/app.js?v=8"></script>
   </body>
 </html>

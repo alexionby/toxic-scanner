@@ -25,6 +25,7 @@ function renderMarkdownReport(markdown) {
 // "н/д", в полигон значений не входит и не читается как низкая оценка.
 
 const scoresPanel = document.querySelector("#scores-panel");
+const scoresVerdict = document.querySelector("#scores-verdict");
 const radarChart = document.querySelector("#radar-chart");
 const scoresList = document.querySelector("#scores-list");
 
@@ -35,6 +36,15 @@ const SCORE_AXES = [
   ["transparency", "Прозрачность"],
   ["future_readiness", "Будущее"],
 ];
+
+// Полосы силы - способ прочтения оценки, не новая формула:
+// пороги продублированы в легенде под радаром.
+function scoreBand(value) {
+  if (value === null) return "nd";
+  if (value >= 70) return "strong";
+  if (value >= 40) return "mid";
+  return "weak";
+}
 
 // cx с запасом под боковые подписи ("Прозрачность", "Будущее — н/д"):
 // они анкорятся снаружи осей и не должны вылезать за viewBox 420x300.
@@ -76,6 +86,7 @@ function drawRadar(scores) {
   const valuePoints = [];
   SCORE_AXES.forEach(([key, label], i) => {
     const value = axisValue(scores[key]);
+    const band = scoreBand(value);
     const angle = axisAngle(i);
 
     const [x2, y2] = polarPoint(angle, RADAR.r);
@@ -89,6 +100,8 @@ function drawRadar(scores) {
       })
     );
 
+    // Подпись оси несёт и значение: имя + число в цвете полосы,
+    // чтобы звезда читалась без списка справа.
     const [lx, ly] = polarPoint(angle, RADAR.r + 16);
     const anchor =
       Math.abs(lx - RADAR.cx) < 6 ? "middle" : lx > RADAR.cx ? "start" : "end";
@@ -101,15 +114,22 @@ function drawRadar(scores) {
       "dominant-baseline": baseline,
       class: value === null ? "radar-label radar-label-null" : "radar-label",
     });
-    text.textContent = value === null ? `${label} — н/д` : label;
+    const nameTspan = svgEl("tspan", {});
+    nameTspan.textContent = label;
+    const valueTspan = svgEl("tspan", {
+      dx: 6,
+      class: `radar-label-value radar-band--${band}`,
+    });
+    valueTspan.textContent = value === null ? "н/д" : String(value);
+    text.append(nameTspan, valueTspan);
     radarChart.append(text);
 
     if (value !== null) {
-      valuePoints.push(polarPoint(angle, (RADAR.r * value) / 100));
+      valuePoints.push({ point: polarPoint(angle, (RADAR.r * value) / 100), band });
     }
   });
 
-  const pointsAttr = valuePoints.map((p) => p.join(",")).join(" ");
+  const pointsAttr = valuePoints.map((v) => v.point.join(",")).join(" ");
   if (valuePoints.length >= 3) {
     radarChart.append(
       svgEl("polygon", { points: pointsAttr, class: "radar-value" })
@@ -119,9 +139,40 @@ function drawRadar(scores) {
       svgEl("polyline", { points: pointsAttr, class: "radar-value" })
     );
   }
-  for (const [px, py] of valuePoints) {
-    radarChart.append(svgEl("circle", { cx: px, cy: py, r: 4, class: "radar-dot" }));
+  valuePoints.forEach(({ point: [px, py], band }, i) => {
+    const dot = svgEl("circle", {
+      cx: px,
+      cy: py,
+      r: 4.5,
+      class: `radar-dot radar-band--${band}`,
+    });
+    dot.style.animationDelay = `${0.3 + i * 0.07}s`;
+    radarChart.append(dot);
+  });
+}
+
+function buildVerdict(scores) {
+  const byBand = { strong: [], mid: [], weak: [], nd: [] };
+  for (const [key, label] of SCORE_AXES) {
+    byBand[scoreBand(axisValue(scores[key]))].push(label);
   }
+
+  const parts = [];
+  if (byBand.strong.length) {
+    const title = byBand.strong.length > 1 ? "Сильные стороны" : "Сильная сторона";
+    parts.push(`${title}: ${byBand.strong.join(", ")}`);
+  }
+  if (byBand.weak.length) {
+    const title = byBand.weak.length > 1 ? "Слабые места" : "Слабое место";
+    parts.push(`${title}: ${byBand.weak.join(", ")}`);
+  }
+  if (byBand.mid.length) {
+    parts.push(`Средне: ${byBand.mid.join(", ")}`);
+  }
+  if (byBand.nd.length) {
+    parts.push(`Без данных: ${byBand.nd.join(", ")}`);
+  }
+  return parts.join(" · ") || "Оценок пока нет";
 }
 
 function renderScoresList(scores) {
@@ -130,17 +181,17 @@ function renderScoresList(scores) {
   for (const [key, label] of SCORE_AXES) {
     const axis = scores[key] ?? {};
     const value = axisValue(axis);
+    const band = scoreBand(value);
 
     const item = document.createElement("details");
-    item.className = "score-item";
+    item.className = `score-item score-item--${band}`;
 
     const summary = document.createElement("summary");
     const name = document.createElement("span");
     name.className = "score-name";
     name.textContent = label;
     const valueEl = document.createElement("span");
-    valueEl.className =
-      value === null ? "score-value score-value-nd" : "score-value";
+    valueEl.className = `score-value score-value--${band}`;
     valueEl.textContent = value === null ? "н/д" : String(value);
     summary.append(name, valueEl);
     item.append(summary);
@@ -167,6 +218,7 @@ function renderScores(scores) {
   }
   drawRadar(scores);
   renderScoresList(scores);
+  scoresVerdict.textContent = buildVerdict(scores);
   scoresPanel.classList.remove("is-hidden");
 }
 

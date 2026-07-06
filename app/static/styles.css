@@ -9,6 +9,11 @@
   --accent-dark: #0b5f59;
   --danger: #b42318;
   --shadow: 0 18px 50px rgba(16, 24, 40, 0.08);
+  /* Полосы силы для звезды качества: цвет = прочтение оценки */
+  --band-strong: #0f766e;
+  --band-mid: #b45309;
+  --band-weak: #b42318;
+  --band-nd: #98a2b3;
 }
 
 * {
@@ -292,18 +297,79 @@ button:disabled {
 }
 
 .scores-panel {
-  display: grid;
-  grid-template-columns: 400px 1fr;
-  gap: 24px;
-  align-items: center;
   padding: 22px 24px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
 }
 
+.scores-head {
+  margin-bottom: 18px;
+}
+
+.scores-head .eyebrow {
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.scores-verdict {
+  margin: 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.scores-body {
+  display: grid;
+  grid-template-columns: 400px 1fr;
+  gap: 24px;
+  align-items: center;
+}
+
 .radar-chart {
   width: 100%;
   height: auto;
+}
+
+.radar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 14px;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.legend-item {
+  white-space: nowrap;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 50%;
+  vertical-align: baseline;
+}
+
+.legend-dot--strong {
+  background: var(--band-strong);
+}
+
+.legend-dot--mid {
+  background: var(--band-mid);
+}
+
+.legend-dot--weak {
+  background: var(--band-weak);
+}
+
+.legend-dot--nd {
+  background: transparent;
+  border: 1.5px dashed var(--band-nd);
 }
 
 .radar-grid {
@@ -318,23 +384,47 @@ button:disabled {
 }
 
 .radar-axis-null {
-  stroke: #98a2b3;
+  stroke: var(--band-nd);
   stroke-dasharray: 4 4;
 }
 
 .radar-label {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
   fill: var(--text);
 }
 
 .radar-label-null {
-  font-weight: 400;
   fill: var(--muted);
 }
 
+.radar-label-value {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.radar-band--strong {
+  fill: var(--band-strong);
+}
+
+.radar-band--mid {
+  fill: var(--band-mid);
+}
+
+.radar-band--weak {
+  fill: var(--band-weak);
+}
+
+.radar-band--nd {
+  font-weight: 600;
+  fill: var(--band-nd);
+}
+
 .radar-value {
-  fill: rgba(15, 118, 110, 0.18);
+  fill: rgba(15, 118, 110, 0.16);
   stroke: var(--accent);
   stroke-width: 2;
   stroke-linejoin: round;
@@ -345,9 +435,55 @@ polyline.radar-value {
 }
 
 .radar-dot {
-  fill: var(--accent-dark);
   stroke: #ffffff;
   stroke-width: 1.5;
+}
+
+/* Момент "замер готов": полигон расцветает из центра, точки догоняют.
+   Центр анимации = центр радара (210,150 - середина viewBox 420x300). */
+@media (prefers-reduced-motion: no-preference) {
+  .radar-value {
+    transform-box: view-box;
+    transform-origin: center;
+    animation: radar-bloom 0.55s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  }
+
+  .radar-dot {
+    animation: radar-pop 0.25s ease-out both;
+  }
+
+  .radar-label-value {
+    animation: radar-fade 0.4s ease-out 0.25s both;
+  }
+}
+
+@keyframes radar-bloom {
+  from {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes radar-pop {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes radar-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .scores-list {
@@ -357,8 +493,21 @@ polyline.radar-value {
 
 .score-item {
   border: 1px solid var(--border);
+  border-left: 3px solid var(--band-nd);
   border-radius: 8px;
   background: #fbfcfd;
+}
+
+.score-item--strong {
+  border-left-color: var(--band-strong);
+}
+
+.score-item--mid {
+  border-left-color: var(--band-mid);
+}
+
+.score-item--weak {
+  border-left-color: var(--band-weak);
 }
 
 .score-item summary {
@@ -387,14 +536,27 @@ polyline.radar-value {
 }
 
 .score-value {
-  color: var(--accent-dark);
   font-weight: 800;
+  font-size: 15px;
   font-variant-numeric: tabular-nums;
 }
 
-.score-value-nd {
+.score-value--strong {
+  color: var(--band-strong);
+}
+
+.score-value--mid {
+  color: var(--band-mid);
+}
+
+.score-value--weak {
+  color: var(--band-weak);
+}
+
+.score-value--nd {
   color: var(--muted);
   font-weight: 600;
+  font-size: 14px;
 }
 
 .score-basis {
@@ -441,7 +603,7 @@ polyline.radar-value {
     width: 100%;
   }
 
-  .scores-panel {
+  .scores-body {
     grid-template-columns: 1fr;
   }
 }
