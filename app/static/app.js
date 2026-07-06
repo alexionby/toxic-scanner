@@ -239,6 +239,7 @@ function showResult(data) {
 // --- Company Resolver (v0) ---
 
 const resolverForm = document.querySelector("#resolver-form");
+const resolverName = document.querySelector("#resolver-name");
 const resolverNip = document.querySelector("#resolver-nip");
 const resolverKrs = document.querySelector("#resolver-krs");
 const resolverButton = document.querySelector("#resolver-submit");
@@ -267,10 +268,23 @@ function renderCandidates(candidates) {
     const header = document.createElement("header");
     const title = document.createElement("h3");
     title.textContent = candidate.name;
+    const badges = document.createElement("span");
+    badges.className = "badges";
     const badge = document.createElement("span");
     badge.className = "badge";
     badge.textContent = candidate.status ?? "unknown";
-    header.append(title, badge);
+    badges.append(badge);
+    header.append(title, badges);
+
+    // confidence < 1 значит кандидат найден по названию через web search:
+    // данные проверены в реестре, но выбор компании подтверждает пользователь.
+    const needsConfirmation = candidate.confidence < 1;
+    if (needsConfirmation) {
+      const confirmBadge = document.createElement("span");
+      confirmBadge.className = "badge badge-confirm";
+      confirmBadge.textContent = "подтвердите";
+      badges.prepend(confirmBadge);
+    }
 
     const details = document.createElement("dl");
     const fields = [
@@ -279,7 +293,7 @@ function renderCandidates(candidates) {
       ["REGON", candidate.regon],
       ["Адрес", candidate.address],
       ["Источник", candidate.source],
-      ["Confidence", candidate.confidence],
+      ["Совпадение", `${Math.round(candidate.confidence * 100)}%`],
     ];
 
     const facts = candidate.facts;
@@ -314,7 +328,11 @@ function renderCandidates(candidates) {
       const reportButton = document.createElement("button");
       reportButton.type = "button";
       reportButton.className = "candidate-report-button";
-      reportButton.textContent = "Построить отчёт";
+      // Явное подтверждение выбора: без клика по конкретному кандидату
+      // отчёт по найденной через web search компании не строится.
+      reportButton.textContent = needsConfirmation
+        ? "Да, это она — построить отчёт"
+        : "Построить отчёт";
       reportButton.addEventListener("click", () =>
         buildHealthCheck(candidate, reportButton)
       );
@@ -326,6 +344,7 @@ function renderCandidates(candidates) {
 }
 
 async function buildHealthCheck(candidate, buttonEl) {
+  const idleLabel = buttonEl.textContent;
   buttonEl.disabled = true;
   buttonEl.textContent = "Строю отчёт...";
   setResolverStatus(
@@ -367,7 +386,7 @@ async function buildHealthCheck(candidate, buttonEl) {
     setResolverStatus(error.message, true);
   } finally {
     buttonEl.disabled = false;
-    buttonEl.textContent = "Построить отчёт";
+    buttonEl.textContent = idleLabel;
   }
 }
 
@@ -375,17 +394,25 @@ resolverForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   const payload = {
+    company_name: resolverName.value.trim() || null,
     nip: resolverNip.value.trim() || null,
     krs: resolverKrs.value.trim() || null,
   };
 
-  if (!payload.nip && !payload.krs) {
-    setResolverStatus("Укажите NIP или KRS — по одному названию v0 не ищет.", true);
+  if (!payload.company_name && !payload.nip && !payload.krs) {
+    setResolverStatus("Укажите название компании, NIP или KRS.", true);
     return;
   }
 
+  // Поиск по названию идёт через web search + верификацию в реестрах,
+  // это заметно дольше прямого lookup по номеру.
+  const isNameSearch = !payload.nip && !payload.krs;
   resolverButton.disabled = true;
-  setResolverStatus("Ищу...");
+  setResolverStatus(
+    isNameSearch
+      ? "Ищу кандидатов в вебе и проверяю каждого по официальным реестрам (10–30 секунд)..."
+      : "Ищу..."
+  );
   resolverResult.replaceChildren();
   resolverRaw.classList.add("is-hidden");
   resolverRawOutput.textContent = "";
@@ -414,11 +441,19 @@ resolverForm.addEventListener("submit", async (event) => {
       throw new Error(`Ошибка запроса (HTTP ${response.status}): ${detail}`);
     }
 
-    setResolverStatus(
-      data.candidates.length
-        ? `Найдено кандидатов: ${data.candidates.length}.`
-        : "Ничего не найдено по официальным реестрам."
-    );
+    if (!data.candidates.length) {
+      setResolverStatus(
+        isNameSearch
+          ? "Не нашлось подтверждённых кандидатов. Уточните название (как в документах) или укажите NIP/KRS."
+          : "Ничего не найдено по официальным реестрам."
+      );
+    } else if (isNameSearch) {
+      setResolverStatus(
+        `Найдено кандидатов: ${data.candidates.length}. Проверьте реквизиты и подтвердите свою компанию.`
+      );
+    } else {
+      setResolverStatus(`Найдено кандидатов: ${data.candidates.length}.`);
+    }
     renderCandidates(data.candidates);
   } catch (error) {
     setResolverStatus(error.message, true);

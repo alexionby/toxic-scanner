@@ -16,13 +16,23 @@
         </div>
 
         <form id="resolver-form" class="search-form">
+          <div>
+            <label for="resolver-name">Название компании</label>
+            <input
+              id="resolver-name"
+              name="company_name"
+              type="text"
+              placeholder="np. CD Projekt"
+            />
+          </div>
+
           <div class="input-row two-cols">
             <div>
-              <label for="resolver-nip">NIP</label>
+              <label for="resolver-nip">NIP <span class="label-hint">необязательно</span></label>
               <input id="resolver-nip" name="nip" type="text" placeholder="7342867148" />
             </div>
             <div>
-              <label for="resolver-krs">KRS</label>
+              <label for="resolver-krs">KRS <span class="label-hint">необязательно</span></label>
               <input id="resolver-krs" name="krs" type="text" placeholder="0000006865" />
             </div>
           </div>
@@ -31,7 +41,7 @@
         </form>
 
         <div id="resolver-status" class="status" role="status" aria-live="polite">
-          Введите NIP или KRS.
+          Введите название компании — или сразу NIP/KRS, если знаете.
         </div>
 
         <div id="resolver-result" class="candidate-list"></div>
