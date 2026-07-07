@@ -25,6 +25,23 @@ LLM_AXES = ("people",)
 _NO_ODPIS_BASIS = ["нет одписа KRS"]
 _NO_LLM_BASIS = ["оценка не получена от агента"]
 
+# Годовой отчёт за год Y обязан попасть в KRS примерно к 15 июля Y+1:
+# до 6 месяцев на утверждение собранием + 15 дней на подачу.
+_FILING_DEADLINE_MONTH_DAY = (7, 15)
+
+
+def expected_statement_year(today: date) -> int:
+    """За какой год отчёт уже ОБЯЗАН лежать в реестре на дату today."""
+    if (today.month, today.day) >= _FILING_DEADLINE_MONTH_DAY:
+        return today.year - 1
+    return today.year - 2
+
+
+def latest_statement_year(period: str | None) -> int | None:
+    """Год из периода одписа вида "OD 01.01.2024 DO 31.12.2024"."""
+    years = [int(y) for y in re.findall(r"\b(\d{4})\b", period or "")]
+    return max(years) if years else None
+
 
 def _no_data_axis(basis: list[str]) -> Axis:
     return {"value": None, "basis": list(basis)}
@@ -149,16 +166,27 @@ def transparency(company: CompanyCandidate, today: date | None = None) -> Axis:
     else:
         basis.append("годовые отчёты не сдавались: +0")
 
-    period_years = [
-        int(y) for y in re.findall(r"\b(\d{4})\b", facts.last_statement_period or "")
-    ]
-    if period_years:
-        last_year = max(period_years)
-        if last_year >= today.year - 2:
+    last_year = latest_statement_year(facts.last_statement_period)
+    if last_year is not None:
+        # Свежесть меряем от законного дедлайна, а не "не старше двух
+        # лет": до ~15 июля отчёт за прошлый год ещё не обязан быть сдан.
+        expected = expected_statement_year(today)
+        if last_year >= expected:
             value += 40
-            basis.append(f"последний отчёт за {last_year}: +40")
+            basis.append(
+                f"последний отчёт за {last_year}: требование выполнено, "
+                f"срок подачи за {last_year + 1} год ещё не истёк: +40"
+            )
+        elif last_year == expected - 1:
+            value += 15
+            basis.append(
+                f"отчёт за {expected} год просрочен "
+                f"(срок подачи ~15.07.{expected + 1}): +15"
+            )
         else:
-            basis.append(f"последний отчёт за {last_year} - старше двух лет: +0")
+            basis.append(
+                f"последний отчёт за {last_year}, просрочен более чем на год: +0"
+            )
     else:
         basis.append("период последнего отчёта неизвестен: +0")
 

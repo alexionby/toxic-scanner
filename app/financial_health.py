@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 
 import requests
 from langchain_core.messages import HumanMessage
@@ -79,8 +79,11 @@ FINANCIAL_SYSTEM_PROMPT = """\
   даны в задаче. Не меняй их и не "уточняй".
 - В задаче есть блок "Жёсткие факты из одписа KRS" - это первоисточник
   (государственный реестр). Строй выводы в первую очередь на нём.
-  Польские компании обязаны сдавать годовой отчёт ежегодно: если
-  последний сданный отчёт старше двух лет - это серьёзный красный флаг.
+  Польские компании обязаны сдавать годовой отчёт ежегодно, срок подачи
+  за год Y - примерно 15 июля года Y+1. В строке "Годовые отчёты" явно
+  сказано, соблюдён ли сейчас этот срок: просрочку называй красным
+  флагом прямо, но НЕ записывай в риски отсутствие отчёта, срок подачи
+  которого ещё не истёк.
   Молодая компания с минимальным капиталом (5 000 PLN) без сданной
   отчётности - признак потенциальной однодневки, скажи об этом прямо.
 - Каждый факт сопровождай ссылкой на источник, из которого ты его взял.
@@ -169,6 +172,19 @@ def _facts_block(company: CompanyCandidate) -> str:
         statements_line = (
             f"сдано {len(statements)} шт., последние периоды: {recent}"
         )
+        last_year = scoring.latest_statement_year(facts.last_statement_period)
+        if last_year is not None:
+            expected = scoring.expected_statement_year(date.today())
+            if last_year >= expected:
+                statements_line += (
+                    f"; срок подачи отчёта за {last_year + 1} год ещё не "
+                    "истёк, отсутствие более свежего отчёта - НЕ риск"
+                )
+            else:
+                statements_line += (
+                    f"; отчёт за {expected} год ПРОСРОЧЕН "
+                    f"(срок подачи ~15.07.{expected + 1})"
+                )
     else:
         statements_line = "не сдавались (ни одной записи в реестре)"
 
