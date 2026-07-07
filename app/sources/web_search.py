@@ -17,10 +17,13 @@ _KRS_PATTERN = re.compile(r"\bKRS[:\s]*([0-9]{6,10})\b", re.IGNORECASE)
 _NIP_PATTERN = re.compile(
     r"\bNIP[:\s]*([0-9]{3}-?[0-9]{3}-?[0-9]{2}-?[0-9]{2}|[0-9]{10})\b", re.IGNORECASE
 )
+# Реестровые агрегаторы (rejestr.io, biznes.gov.pl, bizraport, imsig)
+# держат номер KRS в пути страницы, а не в тексте сниппета.
+_KRS_URL_PATTERN = re.compile(r"/krs/([0-9]{2,10})(?![0-9])", re.IGNORECASE)
 
 
-def _extract_identifiers(text: str) -> tuple[str | None, str | None]:
-    krs_match = _KRS_PATTERN.search(text)
+def _extract_identifiers(text: str, url: str = "") -> tuple[str | None, str | None]:
+    krs_match = _KRS_PATTERN.search(text) or _KRS_URL_PATTERN.search(url)
     nip_match = _NIP_PATTERN.search(text)
     krs = krs_match.group(1).zfill(10) if krs_match else None
     nip = re.sub(r"-", "", nip_match.group(1)) if nip_match else None
@@ -44,7 +47,7 @@ def search_company_candidates(
     hits: list[RawCompanyHit] = []
     for item in raw_results.get("results", []):
         content = f"{item.get('title', '')} {item.get('content', '')}"
-        krs, nip = _extract_identifiers(content)
+        krs, nip = _extract_identifiers(content, item.get("url") or "")
         if not krs and not nip:
             continue  # без идентификатора кандидата нечем верифицировать
 
