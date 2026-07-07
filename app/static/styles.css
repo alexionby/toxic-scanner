@@ -140,6 +140,14 @@ button:disabled {
   opacity: 0.65;
 }
 
+button:focus-visible,
+.report-link:focus-visible,
+summary:focus-visible,
+input:focus-visible {
+  outline: 3px solid rgba(15, 118, 110, 0.4);
+  outline-offset: 2px;
+}
+
 .status {
   min-height: 24px;
   margin-top: 18px;
@@ -252,6 +260,46 @@ button:disabled {
 
 .report-html > :first-child {
   margin-top: 0;
+}
+
+.report-toc {
+  position: sticky;
+  top: -24px;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -24px -24px 14px;
+  padding: 12px 24px;
+  background: rgba(251, 252, 253, 0.94);
+  border-bottom: 1px solid var(--border);
+  backdrop-filter: blur(2px);
+}
+
+.report-toc-link {
+  min-height: 26px;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #344054;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.report-toc-link:hover {
+  border-color: var(--accent);
+  background: rgba(15, 118, 110, 0.06);
+  color: var(--accent-dark);
+}
+
+.report-html h2[id^="report-section"],
+.report-html h3[id^="report-section"] {
+  scroll-margin-top: 56px;
+}
+
+.report-risk-heading {
+  color: var(--band-weak);
 }
 
 .report-html h1,
@@ -722,6 +770,24 @@ polyline.radar-value {
   line-height: 1.5;
 }
 
+@media (prefers-reduced-motion: no-preference) {
+  .score-item[open] .score-basis,
+  .raw-response[open] pre {
+    animation: details-reveal 0.18s ease-out;
+  }
+}
+
+@keyframes details-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .score-basis li {
   margin: 3px 0;
 }
@@ -883,4 +949,49 @@ polyline.radar-value {
   font-size: 13px;
   line-height: 1.5;
   white-space: pre-wrap;
+}
+
+/* Отчёт печатают перед подписанием: только звезда и текст, без хрома */
+@media print {
+  body {
+    background: #ffffff;
+  }
+
+  .tool-panel,
+  .waiting-card,
+  .report-links,
+  .raw-response,
+  .report-toc,
+  .onboarding {
+    display: none !important;
+  }
+
+  .shell {
+    width: 100%;
+    padding: 0;
+  }
+
+  .tool-panel,
+  .result-panel {
+    border: 0;
+    box-shadow: none;
+  }
+
+  .report-html {
+    max-height: none;
+    overflow: visible;
+    background: #ffffff;
+  }
+
+  .scores-panel {
+    break-inside: avoid;
+  }
+
+  .score-item {
+    break-inside: avoid;
+  }
+
+  .score-basis {
+    display: block;
+  }
 }

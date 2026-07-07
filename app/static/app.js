@@ -18,6 +18,43 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 function renderMarkdownReport(markdown) {
   const html = marked.parse(markdown ?? "", { async: false });
   reportOutput.innerHTML = DOMPurify.sanitize(html);
+  buildReportToc();
+}
+
+// Оглавление отчёта из его h2: секции предсказуемы (финансы, отзывы,
+// риск-флаги...), а простыня длинная. Липнет к верху скролл-контейнера.
+function buildReportToc() {
+  // LLM размечает секции то как h2, то как h3 - берём тот уровень,
+  // на котором секций достаточно для навигации
+  let headings = [...reportOutput.querySelectorAll("h2")];
+  if (headings.length < 2) {
+    headings = [...reportOutput.querySelectorAll("h3")];
+  }
+  if (headings.length < 2) {
+    return;
+  }
+
+  const nav = document.createElement("nav");
+  nav.className = "report-toc";
+  nav.setAttribute("aria-label", "Разделы отчёта");
+
+  const smooth = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  headings.forEach((heading, i) => {
+    heading.id = `report-section-${i}`;
+    if (/риск/i.test(heading.textContent)) {
+      heading.classList.add("report-risk-heading");
+    }
+    const link = document.createElement("button");
+    link.type = "button";
+    link.className = "report-toc-link";
+    link.textContent = heading.textContent;
+    link.addEventListener("click", () =>
+      heading.scrollIntoView({ behavior: smooth ? "smooth" : "auto", block: "start" })
+    );
+    nav.append(link);
+  });
+
+  reportOutput.prepend(nav);
 }
 
 // --- Звезда качества (радар, 5 осей) ---
