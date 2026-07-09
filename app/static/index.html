@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Toxic Scanner</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=13" />
+    <link rel="stylesheet" href="/static/styles.css?v=20" />
   </head>
   <body>
     <main class="shell">
@@ -138,10 +138,52 @@
 
         <div id="report-output" class="report-html"></div>
       </section>
+
+      <section id="paywall-card" class="result-panel paywall-card is-hidden" aria-live="polite">
+        <div>
+          <p class="eyebrow">Дальше — платно</p>
+          <h2 id="paywall-headline">
+            <span class="js-paywall-pack">10</span> отчётов — <span class="js-paywall-price">20</span> zł
+          </h2>
+        </div>
+        <p class="paywall-lead">
+          Бесплатные проверки на сегодня использованы. Пакет из
+          <span class="js-paywall-pack">10</span> отчётов по любым компаниям —
+          звезда качества и факты из государственных реестров — за
+          <strong><span class="js-paywall-price">20</span> zł</strong>.
+        </p>
+
+        <button id="paywall-pay" type="button" class="paywall-pay">
+          <span>Купить <span class="js-paywall-pack">10</span> отчётов за <span class="js-paywall-price">20</span> zł</span>
+        </button>
+
+        <form id="paywall-form" class="paywall-form is-hidden">
+          <p id="paywall-note" class="paywall-note"></p>
+          <label for="paywall-email">Email</label>
+          <input
+            id="paywall-email"
+            type="email"
+            inputmode="email"
+            autocomplete="email"
+            placeholder="you@example.com"
+          />
+          <button id="paywall-notify" type="submit">Сообщить о запуске</button>
+        </form>
+
+        <p class="paywall-alt">
+          <button id="paywall-email-toggle" type="button" class="paywall-link">
+            Не готов платить — просто сообщите о запуске
+          </button>
+        </p>
+
+        <p id="paywall-done" class="paywall-done is-hidden">
+          Спасибо! Напишем, как только можно будет оплатить.
+        </p>
+      </section>
     </main>
 
     <script src="/static/vendor/marked-15.0.12.min.js"></script>
     <script src="/static/vendor/purify-3.2.6.min.js"></script>
-    <script src="/static/app.js?v=13"></script>
+    <script src="/static/app.js?v=20"></script>
   </body>
 </html>

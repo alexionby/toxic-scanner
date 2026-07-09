@@ -22,7 +22,8 @@ function renderMarkdownReport(markdown) {
 }
 
 // Оглавление отчёта из его h2: секции предсказуемы (финансы, отзывы,
-// риск-флаги...), а простыня длинная. Липнет к верху скролл-контейнера.
+// риск-флаги...), а простыня длинная. Отчёт под общим скроллом страницы;
+// TOC липнет к верху окна на десктопе, на узком экране — обычный список.
 function buildReportToc() {
   // LLM размечает секции то как h2, то как h3 - берём тот уровень,
   // на котором секций достаточно для навигации
@@ -274,6 +275,86 @@ function showResult(data) {
   resultCard.classList.remove("is-hidden");
 }
 
+// --- Пейвол (фейк-дор) ---
+// Срабатывает на 402: per-IP лимит бесплатных отчётов исчерпан. Клик по
+// «оплатить» и оставленный email — сигналы готовности платить, уходят
+// событием на сервер (fire-and-forget: сеть не должна ломать UI).
+
+const paywallCard = document.querySelector("#paywall-card");
+const paywallPay = document.querySelector("#paywall-pay");
+const paywallForm = document.querySelector("#paywall-form");
+const paywallEmail = document.querySelector("#paywall-email");
+const paywallNote = document.querySelector("#paywall-note");
+const paywallDone = document.querySelector("#paywall-done");
+const paywallToggle = document.querySelector("#paywall-email-toggle");
+const paywallAlt = paywallToggle.closest(".paywall-alt");
+
+let paywallContext = { krs: null, company: null };
+
+function postInterest(payload) {
+  return fetch("/interest", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  }).catch(() => {});
+}
+
+function showPaywall(detail, candidate) {
+  paywallContext = { krs: candidate.krs, company: candidate.name };
+  const price = detail.price_pln ?? 20;
+  const pack = detail.pack_size ?? 10;
+  for (const el of document.querySelectorAll(".js-paywall-price")) {
+    el.textContent = price;
+  }
+  for (const el of document.querySelectorAll(".js-paywall-pack")) {
+    el.textContent = pack;
+  }
+  paywallPay.classList.remove("is-hidden");
+  paywallForm.classList.add("is-hidden");
+  paywallAlt.classList.remove("is-hidden");
+  paywallDone.classList.add("is-hidden");
+  paywallEmail.value = "";
+  paywallCard.classList.remove("is-hidden");
+  paywallCard.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function revealPaywallEmailForm(note) {
+  paywallNote.textContent = note;
+  paywallForm.classList.remove("is-hidden");
+  paywallAlt.classList.add("is-hidden");
+  paywallEmail.focus();
+}
+
+paywallPay.addEventListener("click", () => {
+  postInterest({
+    action: "pay_click",
+    krs: paywallContext.krs,
+    company: paywallContext.company,
+  });
+  paywallPay.classList.add("is-hidden");
+  revealPaywallEmailForm(
+    "Оплата ещё не подключена — продукт в запуске. Оставьте email: " +
+      "сообщим, когда можно будет оплатить, и первый отчёт дадим бесплатно."
+  );
+});
+
+paywallToggle.addEventListener("click", () => {
+  revealPaywallEmailForm("Оставьте email — сообщим, когда запустимся.");
+});
+
+paywallForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const email = paywallEmail.value.trim();
+  postInterest({
+    action: "notify",
+    email: email || null,
+    krs: paywallContext.krs,
+    company: paywallContext.company,
+  });
+  paywallForm.classList.add("is-hidden");
+  paywallDone.classList.remove("is-hidden");
+});
+
 // --- Company Resolver (v0) ---
 
 const resolverForm = document.querySelector("#resolver-form");
@@ -509,6 +590,7 @@ async function buildHealthCheck(candidate, buttonEl) {
   buttonEl.textContent = "Строю отчёт...";
   setResolverStatus("Строю отчёт...");
   resultCard.classList.add("is-hidden");
+  paywallCard.classList.add("is-hidden");
   startWaiting(candidate.name);
 
   try {
@@ -523,6 +605,13 @@ async function buildHealthCheck(candidate, buttonEl) {
       data = JSON.parse(rawText);
     } catch {
       // сервер вернул не-JSON
+    }
+
+    // 402 — исчерпан per-IP лимит: показываем пейвол, а не ошибку.
+    if (response.status === 402 && data?.detail?.paywall) {
+      showPaywall(data.detail, candidate);
+      setResolverStatus("");
+      return;
     }
 
     if (!response.ok || data === null) {

@@ -125,7 +125,11 @@ button,
   padding: 0 18px;
   background: var(--accent);
   color: #ffffff;
-  font-weight: 800;
+  font-weight: 700;
+  /* Segoe UI не имеет начертания 800 -> браузер синтезировал faux-bold и
+     мылил кириллицу на насыщенном фоне. 700 = настоящий Bold; лёгкий трекинг
+     разводит плотные буквы («построить отчёт») на цветной заливке. */
+  letter-spacing: 0.01em;
   text-decoration: none;
   cursor: pointer;
 }
@@ -196,7 +200,7 @@ input:focus-visible {
   border-radius: 50%;
   color: var(--accent-dark);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 20px;
   text-align: center;
 }
@@ -230,7 +234,6 @@ input:focus-visible {
 
 .result-panel {
   margin-top: 18px;
-  overflow: hidden;
 }
 
 .result-header {
@@ -248,14 +251,16 @@ input:focus-visible {
 }
 
 .report-html {
-  max-height: 62vh;
   margin: 0;
   padding: 24px;
-  overflow: auto;
   background: #fbfcfd;
   color: #1d2939;
   font-size: 15px;
   line-height: 1.65;
+  /* Отчёт раскрыт на всю высоту и скроллится общим скроллом страницы,
+     без узкого внутреннего окошка. Нижнее скругление — вместо overflow:hidden
+     на .result-panel (тот ломал sticky-навигацию по разделам). */
+  border-radius: 0 0 8px 8px;
 }
 
 .report-html > :first-child {
@@ -264,7 +269,7 @@ input:focus-visible {
 
 .report-toc {
   position: sticky;
-  top: -24px;
+  top: 0;
   z-index: 1;
   display: flex;
   flex-wrap: wrap;
@@ -293,12 +298,17 @@ input:focus-visible {
   color: var(--accent-dark);
 }
 
+/* Запас = высота прилипшего TOC (до двух рядов кнопок), иначе заголовок
+   раздела прячется под навигацией при переходе по ней. */
 .report-html h2[id^="report-section"],
 .report-html h3[id^="report-section"] {
-  scroll-margin-top: 56px;
+  scroll-margin-top: 92px;
 }
 
-.report-risk-heading {
+/* .report-html — не для вложенности, а чтобы перебить `.report-html h2/h3`
+   (0,1,1): без него общий цвет заголовка гасил красный акцент риск-флагов.
+   Не привязано к тегу — секцию LLM размечает то h2, то h3. */
+.report-html .report-risk-heading {
   color: var(--band-weak);
 }
 
@@ -519,7 +529,7 @@ input:focus-visible {
 
 .radar-label-value {
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0;
 }
 
@@ -659,7 +669,7 @@ polyline.radar-value {
 .waiting-stage--done::before {
   content: "✓";
   color: var(--accent-dark);
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .waiting-elapsed {
@@ -739,7 +749,7 @@ polyline.radar-value {
 }
 
 .score-value {
-  font-weight: 800;
+  font-weight: 700;
   font-size: 15px;
   font-variant-numeric: tabular-nums;
 }
@@ -828,6 +838,17 @@ polyline.radar-value {
   .waiting-body {
     grid-template-columns: 1fr;
   }
+
+  /* На узком экране 11 разделов дают 5-6 рядов кнопок - прилипший TOC
+     съел бы пол-экрана. Пусть уезжает вместе с прокруткой. */
+  .report-toc {
+    position: static;
+  }
+
+  .report-html h2[id^="report-section"],
+  .report-html h3[id^="report-section"] {
+    scroll-margin-top: 12px;
+  }
 }
 
 .two-cols {
@@ -873,7 +894,7 @@ polyline.radar-value {
   background: transparent;
   color: var(--accent-dark);
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -994,4 +1015,69 @@ polyline.radar-value {
   .score-basis {
     display: block;
   }
+}
+
+/* --- Пейвол (фейк-дор, замеритель готовности платить) --- */
+
+/* :not(.is-hidden) — иначе display:grid перебивает .is-hidden (оно выше
+   по файлу при равной специфичности), и пейвол виден всегда. */
+.paywall-card:not(.is-hidden) {
+  display: grid;
+  gap: 16px;
+  padding: 28px;
+}
+
+.paywall-lead {
+  margin: 0;
+  max-width: 60ch;
+  color: #344054;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.paywall-pay {
+  justify-self: start;
+  padding: 0 28px;
+  font-size: 16px;
+}
+
+/* :not(.is-hidden) по той же причине, что и у .paywall-card — иначе
+   форма видна до клика по «Купить». */
+.paywall-form:not(.is-hidden) {
+  display: grid;
+  gap: 10px;
+  max-width: 420px;
+  margin: 0;
+}
+
+.paywall-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.paywall-alt {
+  margin: 0;
+}
+
+.paywall-link {
+  min-height: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.paywall-link:hover {
+  background: none;
+  color: var(--accent-dark);
+}
+
+.paywall-done {
+  margin: 0;
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 700;
 }
