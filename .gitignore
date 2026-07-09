@@ -223,3 +223,7 @@ __marimo__/
 # Runtime logs and browser test artifacts
 logs/
 .playwright-mcp/
+
+# Generated health-check reports (Markdown + evidence JSON): regenerated per run,
+# go stale fast, and evidence bundles will carry CRBR beneficiary PII. Not versioned.
+reports/
