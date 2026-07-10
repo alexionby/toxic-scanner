@@ -23,6 +23,11 @@ from app.telemetry import distinct_id_from_ip, track
 
 GLOBAL_PER_DAY = int(os.environ.get("RATE_LIMIT_GLOBAL_PER_DAY", "50"))
 IP_PER_DAY = int(os.environ.get("RATE_LIMIT_IP_PER_DAY", "10"))
+# Сколько доверенных инфраструктурных IP наша платформа дописывает СПРАВА в
+# X-Forwarded-For после реального IP клиента. На Cloud Run это 1 (Google
+# добавляет "<клиент>, <IP балансировщика>", т.е. клиент — второй справа).
+# За доп. внешним балансировщиком увеличить (каждый хоп +1).
+TRUSTED_PROXY_HOPS = int(os.environ.get("TRUSTED_PROXY_HOPS", "1"))
 # Оффер пейвола: пакет из PACK_SIZE отчётов за PRICE_PLN злотых.
 REPORT_PRICE_PLN = int(os.environ.get("REPORT_PRICE_PLN", "20"))
 REPORT_PACK_SIZE = int(os.environ.get("REPORT_PACK_SIZE", "10"))
@@ -42,11 +47,26 @@ def _roll_day() -> None:
         _ip_counts = {}
 
 
+def _is_valid_ip(ip: str) -> bool:
+    try:
+        ipaddress.ip_address(ip)
+        return True
+    except ValueError:
+        return False
+
+
 def client_ip(request: Request) -> str:
-    # За прокси Cloud Run реальный IP клиента — первый в X-Forwarded-For.
+    # X-Forwarded-For заполняется слева направо от НЕдоверенного к доверенному:
+    # левые значения подставляет сам клиент, правые дописывает инфраструктура.
+    # Поэтому реальный IP берём ОТСЧЁТОМ СПРАВА, пропустив TRUSTED_PROXY_HOPS
+    # инфра-хопов, а НЕ первым слева (тот подделывается → обход per-IP лимита).
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        idx = len(parts) - 1 - TRUSTED_PROXY_HOPS
+        if idx >= 0 and _is_valid_ip(parts[idx]):
+            return parts[idx]
+    # XFF нет / короче ожидаемого / мусор → неподделываемый адрес сокета.
     return request.client.host if request.client else "unknown"
 
 
