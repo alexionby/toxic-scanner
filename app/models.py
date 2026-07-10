@@ -19,6 +19,42 @@ class FiledStatement(BaseModel):
     period: str = ""
 
 
+class OrganMember(BaseModel):
+    """Член органа компании из dział 2 KRS.
+
+    ВАЖНО: имена приходят от реестра ЗАМАСКИРОВАННЫМИ звёздочками
+    ("S***** B******"); мы их так и храним. Полные имена там не
+    отдаются (см. BACKLOG), а имена реальных владельцев берём из CRBR.
+    """
+
+    name: str  # замаскированное имя как отдаёт реестр
+    role: str | None = None  # функция в органе или тип прокуры
+
+
+class Management(BaseModel):
+    """Структура управления из dział 2 KRS (без полных имён)."""
+
+    representation_body: str | None = None  # nazwaOrganu (напр. ZARZĄD)
+    representation_mode: str | None = None  # sposobReprezentacji
+    board: list[OrganMember] = []  # reprezentacja.sklad (zarząd)
+    supervisory_board: list[OrganMember] = []  # organNadzoru (rada nadzorcza)
+    proxies: list[OrganMember] = []  # prokurenci
+
+
+class Reorganization(BaseModel):
+    """Слияние/разделение/преобразование из dział 6 KRS.
+
+    В отличие от distress_flags это не бедствие, а смена периметра
+    компании (поглощение, разделение, смена формы): для контрагента
+    существенно - меняются активы и обязательства. Имена сторон сделки
+    реестр отдаёт полностью (в отличие от замаскированного dział 2).
+    """
+
+    circumstance: str | None = None  # okreslenieOkolicznosci: тип события
+    description: str | None = None  # opis...: юридические детали и даты
+    parties: list[str] = []  # затронутые компании (название + KRS)
+
+
 class CompanyFacts(BaseModel):
     """Жёсткие факты из одписа KRS - первоисточник, не интерпретация."""
 
@@ -30,6 +66,8 @@ class CompanyFacts(BaseModel):
     last_statement_period: str | None = None
     arrears_flags: list[str] = []  # dzial4: задолженности/взыскания
     distress_flags: list[str] = []  # dzial6: ликвидация/банкротство
+    reorganizations: list[Reorganization] = []  # dzial6: слияния/разделения
+    management: Management | None = None  # dzial2: правление/надзор/прокура
 
 
 class CompanyCandidate(BaseModel):

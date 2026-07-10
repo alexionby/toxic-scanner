@@ -137,8 +137,10 @@ def _extract_facts(payload: dict) -> dict:
         if isinstance(w, dict)
     ]
 
-    # dzial6 содержит и безобидные записи (слияния/преобразования),
-    # поэтому флагуем только ключи про ликвидацию/банкротство/роспуск.
+    # dzial6: ликвидацию/банкротство/роспуск флагуем как distress. Записи
+    # о слияниях/разделениях/преобразованиях - НЕ бедствие, а смена
+    # периметра компании; извлекаем их отдельно (reorganizations), чтобы
+    # существенный факт шёл из первоисточника, а не из плавающего веб-поиска.
     distress_patterns = ("likwid", "upadl", "rozwiaz", "wykresl", "zawiesz", "restruktur")
     distress_flags = [
         key
@@ -157,4 +159,98 @@ def _extract_facts(payload: dict) -> dict:
         "last_statement_period": statements[-1]["period"] if statements else None,
         "arrears_flags": arrears_flags,
         "distress_flags": distress_flags,
+        "reorganizations": _extract_reorganizations(dane),
+        "management": _extract_management(dane),
+    }
+
+
+def _extract_reorganizations(dane: dict) -> list[dict]:
+    """Слияния/разделения/преобразования из dział 6.
+
+    Ключ polaczeniePodzialPrzeksztalcenie - список записей вида
+    "PRZEJĘCIE INNEJ SPÓŁKI": тип события, юридическое описание и стороны
+    сделки (podmiotyPrzejmowane и т.п.). Структура сверена с живым ответом
+    API (MPSYSTEM 0000475078: поглощение M.E.FOLIE, 2026-07-09). В отличие
+    от dział 2 имена контрагентов по сделке реестр отдаёт полностью.
+    """
+    records = dane.get("dzial6", {}).get("polaczeniePodzialPrzeksztalcenie") or []
+    reorganizations: list[dict] = []
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        # podmiotyPrzejmowane / podmiotyPowstale / ... - стороны сделки под
+        # разными ключами в зависимости от типа (слияние/разделение).
+        parties: list[str] = []
+        for key, value in rec.items():
+            if not key.startswith("podmioty") or not isinstance(value, list):
+                continue
+            for p in value:
+                if not isinstance(p, dict) or not p.get("nazwa"):
+                    continue
+                krs = (p.get("krs") or {}).get("krs")
+                parties.append(f"{p['nazwa']} (KRS {krs})" if krs else p["nazwa"])
+        reorganizations.append(
+            {
+                "circumstance": rec.get("okreslenieOkolicznosci"),
+                "description": rec.get("opisPolaczeniaPodzialuPrzeksztalcenia"),
+                "parties": parties,
+            }
+        )
+    return reorganizations
+
+
+def _masked_name(entry: dict) -> str:
+    """Собирает замаскированное имя из полей dział 2.
+
+    Реестр отдаёт имена звёздочками (imiona.imie="S*****",
+    nazwisko.nazwiskoICzlon="B******"). Юрлицо-член органа приходит
+    полем nazwa. Полные имена этот API не отдаёт (см. BACKLOG).
+    """
+    imiona = entry.get("imiona") or {}
+    nazwisko = entry.get("nazwisko") or {}
+    first = " ".join(
+        p for p in (imiona.get("imie"), imiona.get("imieDrugie")) if p
+    )
+    last = " ".join(
+        p
+        for p in (nazwisko.get("nazwiskoICzlon"), nazwisko.get("nazwiskoIICzlon"))
+        if p
+    )
+    person = " ".join(p for p in (first, last) if p)
+    return person or entry.get("nazwa") or ""
+
+
+def _extract_management(dane: dict) -> dict | None:
+    """Структура правления/надзора/прокуры из dział 2.
+
+    Структура сверена с живыми ответами API: MPSYSTEM 0000475078
+    (zarząd + prokurenci) и CD Projekt 0000006865 (+ organNadzoru),
+    2026-07-09. Имена остаются замаскированными - так их отдаёт реестр.
+    """
+    dzial2 = dane.get("dzial2") or {}
+    reprezentacja = dzial2.get("reprezentacja") or {}
+
+    board = [
+        {"name": _masked_name(m), "role": m.get("funkcjaWOrganie")}
+        for m in (reprezentacja.get("sklad") or [])
+    ]
+    supervisory = [
+        {"name": _masked_name(m), "role": organ.get("nazwa")}
+        for organ in (dzial2.get("organNadzoru") or [])
+        for m in (organ.get("sklad") or [])
+    ]
+    proxies = [
+        {"name": _masked_name(p), "role": p.get("rodzajProkury")}
+        for p in (dzial2.get("prokurenci") or [])
+    ]
+
+    if not (board or supervisory or proxies or reprezentacja):
+        return None
+
+    return {
+        "representation_body": reprezentacja.get("nazwaOrganu"),
+        "representation_mode": reprezentacja.get("sposobReprezentacji"),
+        "board": board,
+        "supervisory_board": supervisory,
+        "proxies": proxies,
     }
