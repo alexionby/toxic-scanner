@@ -51,10 +51,11 @@ def client_ip(request: Request) -> str:
 
 
 def _is_loopback(ip: str) -> bool:
-    """Локальная разработка (127.0.0.1/::1) не должна упираться в квоту.
+    """True для 127.0.0.1/::1.
 
-    В проде IP берётся из X-Forwarded-For, туда loopback от внешнего
-    клиента не попадёт, так что освобождение безопасно.
+    ВАЖНО: подавать сюда адрес сокета (request.client.host), а НЕ client_ip():
+    последний читает X-Forwarded-For, который внешний клиент может выставить
+    в "127.0.0.1" и притвориться локальным. Адрес сокета подделать нельзя.
     """
     try:
         return ipaddress.ip_address(ip).is_loopback
@@ -77,9 +78,12 @@ def enforce_report_quota(request: Request) -> None:
     global _global_count
     _roll_day()
 
-    ip = client_ip(request)
-    if _is_loopback(ip):
-        # Локальная разработка не тратит квоту и не блокируется.
+    # Освобождаем локальную разработку по НЕПОДДЕЛЫВАЕМОМУ адресу сокета.
+    # client_ip() читает X-Forwarded-For (клиент может подставить туда
+    # "127.0.0.1" и обойти оба потолка), поэтому для решения об освобождении
+    # берём реальный пир: за Cloud Run это инфраструктура Google, не loopback.
+    peer = request.client.host if request.client else ""
+    if _is_loopback(peer):
         return
 
     if _global_count >= GLOBAL_PER_DAY:
@@ -88,6 +92,7 @@ def enforce_report_quota(request: Request) -> None:
             detail="Дневной лимит отчётов исчерпан. Загляните завтра.",
         )
 
+    ip = client_ip(request)
     used = _ip_counts.get(ip, 0)
     if used >= IP_PER_DAY:
         track(
