@@ -1,394 +1,208 @@
 # Toxic Scanner
 
-Рабочая заметка по продукту и архитектуре. Пока это не публичная документация, а описание того, что мы хотим построить и как к этому подойти.
+**Due-diligence for Polish companies — grounded in official registries, explained by an LLM.**
 
-## Идея
+You type a company name (or NIP/KRS). The service resolves it to a real legal
+entity, pulls hard facts from public Polish registries, gathers reputation
+signals from the open web, and produces a verifiable financial-health &
+reputation report — every score backed by a traceable line of evidence.
 
-Toxic Scanner должен быть оберткой над несколькими публичными источниками о работодателях. Пользователь вводит название компании, а система сама собирает сигналы из разных мест, нормализует их и делает единый отчет.
+> Status: pre-alpha, single-developer project. It exists as much to be a
+> **technology showcase** — a full product slice (async API, agentic LLM layer,
+> containerisation, cloud deploy, cost/observability hardening) — as to solve
+> the problem itself.
 
-Первый продуктовый фокус: официальный financial health check польской компании. Сначала мы надежно определяем юридическое лицо, показываем пользователю топ-5 похожих компаний с официальными данными, даем выбрать правильную и только потом строим финансовую оценку по официальным отчетам.
+<p>
+  <img alt="Python 3.14" src="https://img.shields.io/badge/Python-3.14-3776AB?logo=python&logoColor=white">
+  <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white">
+  <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-ReAct%20agent-1C3C3C">
+  <img alt="Gemini" src="https://img.shields.io/badge/Google%20Gemini-Flash%20Lite-4285F4?logo=googlegemini&logoColor=white">
+  <img alt="Cloud Run" src="https://img.shields.io/badge/GCP-Cloud%20Run-4285F4?logo=googlecloud&logoColor=white">
+  <img alt="Docker" src="https://img.shields.io/badge/Docker-slim-2496ED?logo=docker&logoColor=white">
+  <img alt="uv" src="https://img.shields.io/badge/uv-locked%20builds-DE5FE9">
+</p>
 
-Ценность не в том, чтобы открыть GoWork вместо пользователя. Ценность в том, чтобы:
+---
 
-- найти релевантные профили компании на разных порталах;
-- правильно сопоставить пользовательский запрос с юридическим лицом;
-- достать официальные регистрационные и финансовые данные;
-- собрать отзывы, вакансии, юридические данные и новости вместе;
-- убрать дубли и шум;
-- показать факты со ссылками на источники;
-- дать итоговую финансовую и репутационную оценку с объяснением.
+## Tech stack
 
-## Целевой пользовательский сценарий
+The whole point of the project is breadth of a real production slice, not a
+single LLM call.
 
-1. Пользователь вводит название компании, страну и, если знает, город или NIP/KRS.
-2. Система ищет топ-5 наиболее похожих юридических лиц в официальных источниках.
-3. UI показывает название, NIP, KRS, REGON, адрес, статус и confidence match.
-4. Первая компания выбирается по умолчанию, но пользователь может выбрать другую.
-5. После подтверждения система достает финансовые документы и регистрационные данные.
-6. Сырые данные сохраняются в JSON.
-7. LLM строит financial health check только по собранным данным.
-8. Пользователь получает отчет в UI, а также Markdown/JSON-файлы в `reports/`.
+| Layer | Technology |
+| --- | --- |
+| **Language / runtime** | Python 3.14 |
+| **Web API** | FastAPI + Uvicorn (ASGI), fully async endpoints |
+| **Validation / models** | Pydantic v2 |
+| **AI & agents** | LangChain, LangGraph (`create_react_agent`), Google Gemini 3.1 Flash Lite |
+| **Search & extraction** | Tavily Search API (raw-content mode), Jina Reader for clean page text |
+| **Packaging** | `uv` with a frozen lockfile |
+| **Container** | Docker (`python:3.14-slim`, `uv` layered from the official image) |
+| **Cloud** | GCP Cloud Run (scale-to-zero), Artifact Registry, Secret Manager |
+| **Observability** | Dual-sink telemetry — Cloud Logging + optional PostHog Cloud EU |
+| **Frontend** | Vanilla JS, `marked` + `DOMPurify` (vendored, no CDN) |
+| **Data sources** | Polish public registries: KRS, Ministry of Finance VAT whitelist, CRBR (beneficial owners) |
 
-## Источники данных
+---
 
-### Первый приоритет для Польши
+## Architecture
 
-- KRS/CEIDG/REGON/VAT: юридический статус, регистрация, ликвидация, адреса, владельцы.
-- Repozytorium Dokumentów Finansowych: годовые финансовые отчеты, выручка, прибыль/убыток, активы, обязательства, капитал.
-- Web search: вспомогательный поиск компании и проверка неоднозначных совпадений.
-
-### Второй приоритет
-
-- GoWork: отзывы сотрудников и обсуждения.
-- Pracuj.pl, No Fluff Jobs, Just Join IT: активные вакансии, вилки, частота найма.
-- Reddit: публичные обсуждения компании, индустрии, менеджмента и условий работы.
-- Новости, форумы, судебные и репутационные следы.
-
-### Третий приоритет
-
-- Glassdoor и Indeed: если данные публично доступны без логина и обхода защит.
-- LinkedIn: размер компании, активность найма, косвенные признаки текучки.
-- Facebook, локальные форумы: публичные неформальные сигналы.
-
-## Архитектура
-
-Система должна быть построена не как один "умный агент, который сам гуляет по интернету", а как набор обычных адаптеров данных плюс LLM-анализатор.
+Not "one smart agent that browses the internet" — a set of plain data adapters
+feeding a deterministic scoring core, with the LLM confined to the one thing
+formulas can't do (reading employee sentiment).
 
 ```text
-UI
-  -> FastAPI
-    -> Company Resolver
-    -> Source Adapters
-      -> krs.py
-      -> financial_documents.py
-      -> gowork.py
-      -> job_boards.py
-      -> reddit.py
-      -> web_search.py
-    -> Normalizer
-    -> Evidence Store
-    -> Analyzer
-    -> Report Renderer
+Browser UI  (vanilla JS · marked + DOMPurify)
+     │
+     ▼
+FastAPI (async / ASGI) ── Rate limiter (per-IP + global daily caps)
+     │                    Telemetry seam (Cloud Logging · PostHog)
+     ▼
+Company Resolver ── exact path:  KRS / NIP  ──────────────┐
+     │              discovery:   web search → verify       │
+     ▼                                                      ▼
+Source Adapters                                     Official registries
+  ├─ krs.py            National Court Register (facts: age, capital, filings, liquidation)
+  ├─ vat_whitelist.py  Ministry of Finance VAT API
+  ├─ crbr.py           Central Register of Beneficial Owners
+  ├─ financials.py     Revenue / profit / equity / liabilities by year
+  └─ web_search.py     Tavily discovery of candidate entities
+     │
+     ▼
+Scoring (deterministic formulas)  +  ReAct agent (LangGraph + Gemini → reputation)
+     │
+     ▼
+Evidence store (JSON)  +  Report renderer (Markdown → sanitised HTML)
 ```
 
-## Утвержденный технологический стек
+### Request flow
 
-Проект целимся делать как enterprise-grade AI-приложение, которое выглядит в резюме как работа крепкого Middle/Senior инженера: не только LLM-вызов, а полноценный продукт с API, UI, агентами, контейнеризацией, облаком и Infrastructure as Code.
+1. `POST /companies/search` — resolve the query to up to five ranked legal
+   entities (NIP/KRS is an exact hit; a name goes through web discovery +
+   registry verification). The user confirms the right one.
+2. `POST /companies/{krs}/health-check` — collect registry facts, financials
+   and beneficial owners, run the reputation agent, compute the quality star,
+   persist evidence, and render the report.
 
-### App Layer
+---
 
-- Python 3.14: целевая версия рантайма для локальной разработки и Docker.
-- FastAPI: HTTP API, UI-обвязка, endpoint'ы анализа и источников.
-- uv: управление зависимостями, lock-файл, запуск команд и Docker-сборка.
+## Engineering highlights
 
-### AI & Agentic Layer
+These are the decisions worth reading the code for.
 
-- Google Gemini Flash: основная LLM для анализа больших объемов отзывов и evidence-данных.
-- LangChain: интеграция LLM, tools и внешних источников.
-- LangGraph: orchestration layer для ReAct-агента и будущих workflow.
-- Tavily Search API: AI-ориентированный web search для поиска профилей и источников.
-- Jina Reader API: извлечение чистого Markdown-текста из публичных страниц.
+- **Grounded, explainable scoring.** The "quality star" has five axes; four are
+  **deterministic formulas** over official data and one (*People*) is the LLM's
+  job. When there's no data, an axis is `null` — an honest "no data", never a
+  guessed 50/100. Every point awarded is a human-readable line in a `basis`
+  list, so any score can be audited back to its source. See `app/scoring.py`.
 
-### Cloud & DevOps Layer
+- **Two-stage company resolution.** An exact identifier (KRS/NIP) takes a
+  deterministic fast path with `confidence = 1.0`. A name goes through fuzzy
+  discovery (Tavily) → **parallel verification against official registries**
+  (`ThreadPoolExecutor`) → dedup → similarity-based confidence that is always
+  `< 1.0`, forcing a human to confirm. Polish legal-form tokens
+  (`sp. z o.o.`, `S.A.`, …) are stripped before name matching. See
+  `app/companies.py`.
 
-- Docker: упаковка приложения в воспроизводимый контейнер.
-- GCP Artifact Registry: приватное хранилище Docker-образов.
-- GCP Cloud Run: serverless-запуск контейнера по запросу.
-- GCP Secret Manager: хранение ключей Gemini, Tavily и других провайдеров.
+- **Defensive LLM tooling.** The reputation ReAct agent gets raw page bodies
+  (not two-sentence snippets) and **detects bot walls** — a Cloudflare "just a
+  moment" challenge served with HTTP 200 is reported to the model as "couldn't
+  read", so it never mistakes a challenge page for "no reviews found". See
+  `app/financial_health.py`.
 
-### Infrastructure as Code
+- **Cost hardening on a public endpoint.** Report generation costs real money
+  (Gemini + Tavily), so there are **two daily cost ceilings** — global and
+  per-IP. The client IP is taken from the *right* of `X-Forwarded-For`
+  (`TRUSTED_PROXY_HOPS`, tuned for direct Cloud Run) to close a trivial
+  quota-bypass. See `app/ratelimit.py`.
 
-- Terraform: описание облачной инфраструктуры кодом.
-- Цель: деплой инфраструктуры и приложения одной воспроизводимой командой.
+- **Privacy-aware telemetry.** `distinct_id` is a salted hash of the IP (the
+  target audience runs ad-blockers, so client-side JS would undercount).
+  Product events carry **defense-in-depth PII redaction**; waitlist emails go to
+  a separate sink, never into the product stream. See `app/telemetry.py`.
 
-## Компоненты
+- **Supply-chain-conscious frontend.** No CDN. `marked` and `DOMPurify` are
+  vendored, and DOMPurify sanitises the LLM/Markdown output before it reaches
+  the DOM — untrusted model text is never injected raw.
 
-### Company Resolver
+- **Reproducible builds.** `uv sync --frozen` against a committed lockfile on a
+  slim Python 3.14 base; a `/healthz` probe that touches no external services
+  keeps Cloud Run cold-starts honest.
 
-Отвечает за поиск правильного юридического лица по названию, NIP, KRS, REGON, городу или домену.
+---
 
-Вход:
+## Running locally
 
-```json
-{
-  "company_name": "MPSystems SP z o.o.",
-  "country": "PL",
-  "city": null,
-  "nip": null,
-  "krs": null
-}
+Requires [`uv`](https://docs.astral.sh/uv/) and API keys for Google Gemini and
+Tavily.
+
+```bash
+# 1. Install dependencies from the lockfile
+uv sync --frozen
+
+# 2. Provide keys (LangChain reads these from the environment)
+cat > .env <<'EOF'
+GOOGLE_API_KEY=your-gemini-key
+TAVILY_API_KEY=your-tavily-key
+EOF
+
+# 3. Run
+uv run uvicorn app.main:app --reload --port 8080
 ```
 
-Выход:
+Open <http://localhost:8080>. Reports and their evidence JSON are written to
+`REPORTS_DIR` (default `reports/`).
 
-```json
-{
-  "candidates": [
-    {
-      "name": "MPSystems SP z o.o.",
-      "source": "krs",
-      "url": "...",
-      "krs": "...",
-      "nip": "...",
-      "regon": "...",
-      "address": "...",
-      "status": "active",
-      "confidence": 0.91
-    }
-  ]
-}
+### Notable environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `GOOGLE_API_KEY` / `TAVILY_API_KEY` | — | LLM and web-search credentials |
+| `RATE_LIMIT_GLOBAL_PER_DAY` | `50` | Hard daily ceiling on report builds |
+| `RATE_LIMIT_IP_PER_DAY` | `10` | Per-IP daily ceiling |
+| `TRUSTED_PROXY_HOPS` | `0` | Trusted proxy hops right of the client IP in `X-Forwarded-For` |
+| `POSTHOG_API_KEY` | — | Enables server-side PostHog capture (off → no-op) |
+| `REPORTS_DIR` | `reports` | Where reports and evidence JSON are stored |
+
+---
+
+## Deployment
+
+Built for **GCP Cloud Run** with `min-instances=0` (scales to zero → effectively
+free at validation traffic; single instance is enough for the in-memory rate
+limiter). Container images live in **Artifact Registry**; API keys come from
+**Secret Manager**.
+
+```bash
+docker build -t toxic-scanner .
+docker run -p 8080:8080 --env-file .env toxic-scanner
 ```
 
-UI всегда показывает топ-5 кандидатов. Первый кандидат выбран по умолчанию, но пользователь должен иметь возможность выбрать другую компанию перед запуском financial health check.
-
-### Financial Health Check
-
-Первый аналитический модуль проекта. Он работает только после того, как пользователь подтвердил конкретную компанию.
-
-Минимальные поля:
-
-- выручка по годам;
-- прибыль или убыток по годам;
-- активы;
-- обязательства;
-- капитал;
-- динамика год к году;
-- пропущенные или несданные отчеты;
-- ссылки на исходные документы.
-
-Минимальные выводы:
-
-- финансовая стабильность;
-- рост или падение выручки;
-- повторяющиеся убытки;
-- долговая нагрузка;
-- риск-флаги;
-- качество и полнота данных.
-
-### Source Adapters
-
-Каждый источник должен иметь отдельный адаптер. Адаптер не делает финальный анализ, он только собирает и структурирует данные.
-
-Пример Phase 1-адаптера:
-
-```text
-krs.py
-  -> resolve_company()
-  -> get_company_profile()
-
-financial_documents.py
-  -> list_financial_reports()
-  -> extract_financial_metrics()
-```
-
-Для Phase 2 GoWork и Reddit становятся отдельными reputation-адаптерами. Reddit адаптер должен искать публичные посты и комментарии по названию компании, домену, бренду и ключевым словам вроде `work`, `salary`, `interview`, `layoffs`, `toxic`, `Poland`. В отчете Reddit нужно учитывать как слабый, но полезный сигнал: это не официальный источник, зато он может быстро показать повторяющиеся жалобы, истории сотрудников и репутационные риски.
-
-### Normalizer
-
-Приводит данные из разных источников к единому формату.
-
-Базовая схема для Phase 1 financial metrics:
-
-```json
-{
-  "source": "rdf",
-  "company_name": "MPSystems SP z o.o.",
-  "krs": "...",
-  "items": [
-    {
-      "type": "financial_statement",
-      "year": 2025,
-      "revenue": null,
-      "net_profit": null,
-      "assets": null,
-      "liabilities": null,
-      "equity": null,
-      "evidence_url": "https://..."
-    }
-  ]
-}
-```
-
-Базовая схема для reputation-сигналов:
-
-```json
-{
-  "source": "gowork",
-  "company_name": "MPSystems SP z o.o.",
-  "url": "https://...",
-  "items": [
-    {
-      "type": "review",
-      "date": "2025-01-12",
-      "rating": null,
-      "title": null,
-      "text": "...",
-      "evidence_url": "https://..."
-    }
-  ]
-}
-```
-
-### Evidence Store
-
-Сохраняет все собранные данные до анализа.
-
-Примеры файлов:
-
-```text
-reports/20260706-120000-mpsystems-evidence.json
-reports/20260706-120000-mpsystems-report.md
-```
-
-Это важно, чтобы можно было проверить, на каких фактах построен отчет.
-
-### Analyzer
-
-LLM должна анализировать уже собранный JSON, а не самостоятельно искать данные. Это снижает галлюцинации и делает отчет проверяемым.
-
-Задачи Phase 1-анализатора:
-
-- выделить финансовые красные флаги;
-- отделить факты от предположений;
-- оценить полноту официальных данных;
-- найти падение выручки, повторяющиеся убытки и рост обязательств;
-- отметить отсутствие отчетов как отдельный риск, а не как плюс;
-- построить financial health score с объяснением.
+---
 
 ## Roadmap
 
-### Phase 1: Official Company Financial Health Check
+Deliberately honest about what is **not** built yet:
 
-Это стартовый MVP.
+- **Infrastructure as Code** — Terraform to deploy the Cloud Run service,
+  registry and secrets in one reproducible command *(planned, not yet in repo)*.
+- **CI** — GitHub Actions running lint + unit tests on the pure functions
+  (scoring formulas, NIP checksum, registry parsers).
+- **Primary financial source** — parse annual statements straight from the
+  Repozytorium Dokumentów Finansowych (XML) instead of secondary web sources.
+- **Persistence** — report history in a database, a task queue for long
+  analyses, and PDF export.
 
-1. UI: поле названия компании, страна, опционально город/NIP/KRS.
-2. Company Resolver: поиск топ-5 официальных кандидатов.
-3. Candidate Selection UI: выбор юридического лица с NIP, KRS, REGON, адресом и статусом.
-4. Financial Documents adapter: получение официальных финансовых документов.
-5. Financial Normalizer: выручка, прибыль/убыток, активы, обязательства, капитал по годам.
-6. Evidence JSON: сохранение регистрационных и финансовых данных.
-7. Financial Health Report: Markdown-отчет с источниками и риск-флагами.
+---
 
-### Phase 2: Employer Reputation Layer
+## Legal & ethical constraints
 
-1. GoWork adapter: поиск профиля и экспорт публичных отзывов.
-2. Reddit adapter: публичные посты и комментарии.
-3. Job Boards adapter: активные вакансии, вилки, частота найма.
-4. Web Search adapter: новости, форумы, общие упоминания.
-5. Reputation Evidence JSON: сохранение всех репутационных сигналов.
+- No logging into third-party sites on a user's behalf; no CAPTCHA bypass.
+- No scraping of private data; no aggressive mass scraping.
+- Rate limits and caching on every outbound call.
+- Protected sources are used only where data is publicly available, or skipped.
 
-### Phase 3: Unified Toxicity Report
+---
 
-1. Объединение financial health и employer reputation.
-2. Дедупликация сигналов.
-3. Общий toxicity score.
-4. Объяснимые выводы с ссылками на evidence.
-5. Экспорт Markdown/PDF/JSON.
-
-## MVP Phase 1
-
-Первую рабочую версию стоит сделать так:
-
-1. UI: поле названия компании, страна, опционально город/NIP/KRS.
-2. Endpoint `/companies/search`: топ-5 компаний с официальными данными.
-3. UI выбора компании: первая выбрана по умолчанию, пользователь может сменить.
-4. Endpoint `/companies/{krs}/financials`: финансовые данные по выбранной компании.
-5. Endpoint `/companies/{krs}/health-check`: интерпретация финансового состояния.
-6. Evidence JSON: сохранение регистрационных и финансовых данных.
-7. Markdown report: итоговый financial health check с источниками.
-8. UI: статус выполнения, отчет, ссылки на сырой JSON и Markdown.
-
-## Что считать хорошим Phase 1-отчетом
-
-Отчет должен быть не просто текстом от модели, а проверяемым документом по официальным данным.
-
-Минимальная структура:
-
-- финансовый health score;
-- идентификация компании: KRS, NIP, REGON, адрес, статус;
-- краткий вывод;
-- выручка по годам;
-- прибыль или убыток по годам;
-- активы, обязательства и капитал;
-- динамика и тренды;
-- финансовые риск-флаги;
-- качество данных;
-- список источников;
-- что проверить перед подписанием контракта.
-
-## Технические ограничения
-
-- Не логинимся на сайты от имени пользователя.
-- Не обходим CAPTCHA.
-- Не парсим приватные данные.
-- Не делаем агрессивный массовый скрейпинг.
-- Ставим лимиты запросов и кэширование.
-- Для защищенных источников используем только публично доступные данные или пропускаем источник.
-
-## Возможные технические подходы
-
-### Простой вариант
-
-- `requests`
-- `BeautifulSoup`
-- `Tavily`
-- `FastAPI`
-- JSON-файлы как временное хранилище
-
-Плюсы: быстро собрать MVP.
-
-Минусы: сайты с JavaScript могут отдавать мало данных.
-
-### Более надежный вариант
-
-- `Playwright` для источников, где данные грузятся через браузер;
-- очередь задач для долгих анализов;
-- SQLite/PostgreSQL для истории отчетов;
-- отдельный слой адаптеров;
-- PDF-экспорт.
-
-Плюсы: лучше покрытие источников и удобнее масштабировать.
-
-Минусы: больше инфраструктуры и сложнее поддержка.
-
-## Текущий статус проекта
-
-Сейчас есть:
-
-- FastAPI-приложение;
-- простой UI;
-- endpoint `/analyze`;
-- сохранение Markdown-отчетов в `reports/`;
-- LLM-анализ через Gemini;
-- общий web search через Tavily;
-- чтение страниц через Jina Reader.
-- Dockerfile на Python 3.14 с установкой зависимостей через `uv`.
-
-Сейчас нет:
-
-- специализированных адаптеров источников;
-- нормального Company Resolver;
-- Financial Documents adapter;
-- financial health check;
-- экспорта сырых evidence-данных;
-- выбора компании при неоднозначном совпадении;
-- очереди задач;
-- истории отчетов в базе.
-
-## Следующий разумный шаг
-
-Следующий шаг: спроектировать Phase 1-модули:
-
-```text
-app/
-  sources/
-    base.py
-    krs.py
-    financial_documents.py
-    web_search.py
-  companies.py
-  evidence.py
-  financial_health.py
-```
-
-Первым адаптером стоит сделать KRS/official company resolver, потому что правильное сопоставление компании является основой всего дальнейшего анализа.
+*Single-developer portfolio project. Not affiliated with any of the registries
+or data sources referenced above.*

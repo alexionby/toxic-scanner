@@ -1,7 +1,7 @@
 [project]
 name = "toxic-scanner"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.8.0"
+description = "Due-diligence for Polish companies — grounded in official registries, explained by an LLM."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
