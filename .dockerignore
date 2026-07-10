@@ -1,0 +1,35 @@
+# В образ едет только код приложения. Всё остальное — вне.
+.git
+.gitignore
+.dockerignore
+
+# Секреты и локальное окружение — НИКОГДА в образ
+.env
+.envrc
+.venv
+env/
+venv/
+
+# Артефакты отчётов и прогонов: на проде пишутся в /tmp, в образе не нужны
+reports/
+logs/
+.playwright-mcp/
+danepodmiotu-response.json
+odpisaktualny-response.json
+gowork_med.json
+*-response.json
+
+# Инструментальное / редакторское
+.claude/
+.zed/
+.vscode/
+.idea/
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+__pycache__/
+*.py[codz]
+
+# Документы разработки (в рантайме не нужны)
+PLAN.md
+BACKLOG.md

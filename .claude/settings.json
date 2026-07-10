@@ -6,6 +6,7 @@
       "WebSearch",
       "WebFetch",
       "Bash(git *)",
+      "Bash(curl *)",
       "Bash(uv *)",
       "Bash(uvx *)",
       "Bash(python *)",
