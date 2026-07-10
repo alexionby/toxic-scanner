@@ -587,53 +587,6 @@ def _financials_block(fin: FinancialsResult) -> str:
     return "\n".join(lines) + "\n\n"
 
 
-def _short_company_name(raw: str) -> str:
-    """Ядро названия для веб-запроса: без правовой формы и хвоста (KRS ...).
-
-    "M.E.FOLIE SPÓŁKA Z OGRANICZONĄ ODPOWIEDZIALNOŚCIĄ (KRS 000...)" ->
-    "M.E.FOLIE". Полная форма в поисковом запросе только шумит.
-    """
-    name = raw.split(" (KRS")[0]
-    upper = name.upper()
-    cut = min(
-        (idx for idx in (upper.find(" SPÓŁKA"), upper.find(" SP. Z"), upper.find(" SP Z")) if idx != -1),
-        default=len(name),
-    )
-    return name[:cut].strip(" ,")
-
-
-def _reorg_search_hint(company: CompanyCandidate) -> str:
-    """Наводка агенту: обогатить известное из KRS слияние деталями из веба.
-
-    Сам факт реорганизации стабилен (dział 6), но реестр не объясняет её
-    причин. Даём целевой запрос по названиям сторон - обогащение, а не
-    обнаружение: не нашлось новости, базовый факт всё равно в отчёте.
-    """
-    facts = company.facts
-    if not (facts and facts.reorganizations):
-        return ""
-
-    others: list[str] = []
-    for r in facts.reorganizations:
-        for party in r.parties:
-            short = _short_company_name(party)
-            if short and short not in others:
-                others.append(short)
-    if not others:
-        return ""
-
-    pair = " ".join([_short_company_name(company.name), *others]).strip()
-    return (
-        "В фактах есть реорганизация (слияние/поглощение) - это стабильный "
-        "факт из KRS, но причины и детали сделки реестр не объясняет. Сделай "
-        "ОДИН целевой веб-поиск именно про это событие (например "
-        f"'{pair} połączenie' или '{pair} przejęcie'), чтобы найти новость с "
-        "причинами и контекстом. Что нашлось - добавь со ссылкой в 'О "
-        "компании' как обогащение к факту из KRS; не нашлось - опиши событие "
-        "по факту из реестра, без домыслов о причинах.\n\n"
-    )
-
-
 def _task_prompt(
     company: CompanyCandidate, fin: FinancialsResult, ben: BeneficiariesResult
 ) -> str:
@@ -657,8 +610,7 @@ def _task_prompt(
         "затем поищи свежие новости и публичные события (например "
         f"'{company.name} aktualności' и '{company.name} news'). "
         "Официальный PKD уже дан в фактах выше - сверь с ним описание.\n\n"
-        + _reorg_search_hint(company)
-        + "Если каких-то финансовых цифр выше не хватает, можешь поискать "
+        "Если каких-то финансовых цифр выше не хватает, можешь поискать "
         f"их по официальным реквизитам: 'aleo.com KRS {company.krs}', "
         f"'rejestr.io {company.krs}', '{company.name} wyniki finansowe "
         "przychody'. Найденные страницы агрегаторов читай целиком.\n\n"
