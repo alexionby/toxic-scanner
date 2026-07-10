@@ -38,6 +38,10 @@ REQUEST_TIMEOUT_SECONDS = 15
 # сам по себе сигнал, но тянуть весь список незачем. Усечение помечаем.
 MAX_LINKED_COMPANIES = 20
 
+# Дата запуска CRBR: форвардный запрос делаем диапазоном от неё до сегодня,
+# чтобы одним вызовом получить и текущий состав, и историю владения.
+CRBR_START_DATE = "2019-10-13"
+
 
 @dataclass
 class LinkedCompany:
@@ -74,6 +78,9 @@ class BeneficiariesResult:
     found: bool = False  # в CRBR есть запись о бенефициарах
     beneficiaries: list[Beneficiary] = field(default_factory=list)
     subject_address: str | None = None  # адрес самой фирмы для сверки сети
+    owners_since: str | None = None  # с какой даты действует текущий состав
+    ownership_changed: bool = False  # менялся ли состав за историю CRBR
+    discrepancy: bool = False  # подано расхождение (listaInformacjiORozbieznosciach)
     source_url: str = SOURCE_URL
     note: str | None = None
 
@@ -82,12 +89,12 @@ def _normalize_nip(nip: str) -> str:
     return "".join(ch for ch in nip if ch.isdigit())
 
 
-def _base_payload() -> dict:
+def _base_payload(date_from: str | None = None) -> dict:
     today = date.today().isoformat()
     # reCaptchaToken="0" принимается на одиночных запросах (проверено); при
     # массовом прогоне здесь понадобится реальный токен (см. BACKLOG).
     return {
-        "dataOd": today,
+        "dataOd": date_from or today,
         "dataDo": today,
         "reCaptchaToken": "0",
         "czasPobraniaDanych": int(time.time() * 1000),
@@ -152,12 +159,54 @@ def get_beneficiaries(nip: str, with_network: bool = False) -> BeneficiariesResu
     if not is_valid_nip(nip_digits):
         return BeneficiariesResult(nip=nip_digits, ok=False, note="некорректный NIP")
 
-    payload = {"kontekstWyszukania": 1, "nip": nip_digits, **_base_payload()}
+    # Диапазон от запуска CRBR: одним вызовом получаем и текущий состав, и
+    # историю владения (смена собственника - отдельный сигнал).
+    payload = {
+        "kontekstWyszukania": 1,
+        "nip": nip_digits,
+        **_base_payload(date_from=CRBR_START_DATE),
+    }
     data, err = _call(payload, f"NIP {nip_digits}")
     if data is None:
         return BeneficiariesResult(nip=nip_digits, ok=False, note=err)
 
     return _parse_response(nip_digits, data, with_network)
+
+
+def _display_name(beneficiary: dict) -> str:
+    return " ".join(
+        p
+        for p in (
+            beneficiary.get("imiePierwsze"),
+            beneficiary.get("imieDrugieINastepne"),
+            beneficiary.get("nazwisko"),
+        )
+        if p
+    ) or beneficiary.get("nazwaBeneficjentaGrupowego") or "—"
+
+
+def _ownership_history(records: list[dict]) -> tuple[str | None, bool]:
+    """(дата начала текущего состава владельцев, менялся ли состав).
+
+    records отсортированы по периоду. Идём с конца, пока набор имён совпадает
+    с текущим - его начало и есть «владельцы с такой-то даты».
+    """
+    sets = [
+        (
+            r.get("dataPoczatkuPrezentacji"),
+            frozenset(_display_name(b) for b in (r.get("listaBeneficjentow") or [])),
+        )
+        for r in records
+    ]
+    current_set = sets[-1][1]
+    changed = len({s for _, s in sets}) > 1
+    owners_since = None
+    for start, s in reversed(sets):
+        if s == current_set:
+            owners_since = start
+        else:
+            break
+    return owners_since, changed
 
 
 def _parse_response(nip: str, payload: dict, with_network: bool) -> BeneficiariesResult:
@@ -169,25 +218,23 @@ def _parse_response(nip: str, payload: dict, with_network: bool) -> Beneficiarie
             nip=nip, ok=True, found=False, note="в CRBR нет записи о бенефициарах"
         )
 
-    subject_address = _format_address(records[0].get("spolka", {}).get("adresSiedziby"))
-    beneficiaries: list[Beneficiary] = []
-    for b in records[0].get("listaBeneficjentow") or []:
-        name = " ".join(
-            p
-            for p in (
-                b.get("imiePierwsze"),
-                b.get("imieDrugieINastepne"),
-                b.get("nazwisko"),
-            )
-            if p
-        ) or b.get("nazwaBeneficjentaGrupowego") or "—"
+    # Диапазонный ответ идёт записями по периодам; свежий период = текущий состав.
+    records = sorted(records, key=lambda r: r.get("dataPoczatkuPrezentacji") or "")
+    current = records[-1]
+    spolka = current.get("spolka", {}) or {}
+    subject_address = _format_address(spolka.get("adresSiedziby"))
+    discrepancy = bool(spolka.get("listaInformacjiORozbieznosciach"))
+    owners_since, ownership_changed = _ownership_history(records)
 
+    beneficiaries: list[Beneficiary] = []
+    for b in current.get("listaBeneficjentow") or []:
         citizenship = [
             o.get("nazwa") for o in (b.get("obywatelstwo") or []) if o.get("nazwa")
         ]
-
         ben = Beneficiary(
-            name=name, citizenship=citizenship, ownership=_ownership_descriptions(b)
+            name=_display_name(b),
+            citizenship=citizenship,
+            ownership=_ownership_descriptions(b),
         )
         if with_network:
             _attach_network(ben, b.get("pesel"), subject_nip=nip)
@@ -199,6 +246,9 @@ def _parse_response(nip: str, payload: dict, with_network: bool) -> Beneficiarie
         found=True,
         beneficiaries=beneficiaries,
         subject_address=subject_address,
+        owners_since=owners_since,
+        ownership_changed=ownership_changed,
+        discrepancy=discrepancy,
     )
 
 

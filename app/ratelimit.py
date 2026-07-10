@@ -23,11 +23,13 @@ from app.telemetry import distinct_id_from_ip, track
 
 GLOBAL_PER_DAY = int(os.environ.get("RATE_LIMIT_GLOBAL_PER_DAY", "50"))
 IP_PER_DAY = int(os.environ.get("RATE_LIMIT_IP_PER_DAY", "10"))
-# Сколько доверенных инфраструктурных IP наша платформа дописывает СПРАВА в
-# X-Forwarded-For после реального IP клиента. На Cloud Run это 1 (Google
-# добавляет "<клиент>, <IP балансировщика>", т.е. клиент — второй справа).
-# За доп. внешним балансировщиком увеличить (каждый хоп +1).
-TRUSTED_PROXY_HOPS = int(os.environ.get("TRUSTED_PROXY_HOPS", "1"))
+# Сколько доверенных инфраструктурных хопов дописано СПРАВА от реального IP
+# клиента в X-Forwarded-For. Прямой Cloud Run (*.run.app, наш деплой): Google
+# Front End вписывает реальный IP последним → 0 (берём самый правый). За
+# внешним HTTPS Load Balancer / CDN добавляется ещё хоп справа ("<клиент>,
+# <IP LB>") → поднять через env. Значение зависит от топологии: при сомнении
+# замерить реальный X-Forwarded-For на проде.
+TRUSTED_PROXY_HOPS = int(os.environ.get("TRUSTED_PROXY_HOPS", "0"))
 # Оффер пейвола: пакет из PACK_SIZE отчётов за PRICE_PLN злотых.
 REPORT_PRICE_PLN = int(os.environ.get("REPORT_PRICE_PLN", "20"))
 REPORT_PACK_SIZE = int(os.environ.get("REPORT_PACK_SIZE", "10"))
