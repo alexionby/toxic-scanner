@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Toxic Scanner</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
-    <link rel="stylesheet" href="/static/styles.css?v=20" />
+    <link rel="stylesheet" href="/static/styles.css?v=21" />
   </head>
   <body>
     <main class="shell">
@@ -17,31 +17,22 @@
 
         <form id="resolver-form" class="search-form">
           <div>
-            <label for="resolver-name">Название компании</label>
+            <label for="resolver-query">Название, NIP или KRS</label>
             <input
-              id="resolver-name"
-              name="company_name"
+              id="resolver-query"
+              name="query"
               type="text"
-              placeholder="np. CD Projekt"
+              placeholder="np. CD Projekt · 7342867148 · 0000006865"
+              autocomplete="off"
             />
-          </div>
-
-          <div class="input-row two-cols">
-            <div>
-              <label for="resolver-nip">NIP <span class="label-hint">необязательно</span></label>
-              <input id="resolver-nip" name="nip" type="text" placeholder="7342867148" />
-            </div>
-            <div>
-              <label for="resolver-krs">KRS <span class="label-hint">необязательно</span></label>
-              <input id="resolver-krs" name="krs" type="text" placeholder="0000006865" />
-            </div>
           </div>
 
           <button id="resolver-submit" type="submit">Найти компанию</button>
         </form>
 
         <div id="resolver-status" class="status" role="status" aria-live="polite">
-          Введите название компании — или сразу NIP/KRS, если знаете.
+          Введите что есть под рукой — название, NIP или KRS. Сервис сам
+          поймёт, что это.
         </div>
 
         <div id="onboarding" class="onboarding">
@@ -184,6 +175,6 @@
 
     <script src="/static/vendor/marked-15.0.12.min.js"></script>
     <script src="/static/vendor/purify-3.2.6.min.js"></script>
-    <script src="/static/app.js?v=20"></script>
+    <script src="/static/app.js?v=21"></script>
   </body>
 </html>

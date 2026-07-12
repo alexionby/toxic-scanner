@@ -88,12 +88,6 @@ label {
   font-weight: 700;
 }
 
-.input-row {
-  display: grid;
-  grid-template-columns: 1fr 160px;
-  gap: 12px;
-}
-
 input,
 button,
 .report-link {
@@ -261,6 +255,9 @@ input:focus-visible {
      без узкого внутреннего окошка. Нижнее скругление — вместо overflow:hidden
      на .result-panel (тот ломал sticky-навигацию по разделам). */
   border-radius: 0 0 8px 8px;
+  /* LLM вставляет длинные URL и польские 30-буквенные слова — без переноса
+     они раскатывают страницу за вьюпорт на мобилке. */
+  overflow-wrap: break-word;
 }
 
 .report-html > :first-child {
@@ -282,13 +279,13 @@ input:focus-visible {
 }
 
 .report-toc-link {
-  min-height: 26px;
-  padding: 2px 10px;
+  min-height: 28px;
+  padding: 3px 11px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: #ffffff;
   color: #344054;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 
@@ -363,11 +360,22 @@ input:focus-visible {
   color: var(--accent-dark);
 }
 
+/* Обёртка вешается в renderMarkdownReport: широкая таблица скроллится
+   внутри себя, а не раскатывает всю страницу за край вьюпорта. */
+.table-scroll {
+  margin: 1em 0;
+  overflow-x: auto;
+}
+
 .report-html table {
   width: 100%;
   margin: 1em 0;
   border-collapse: collapse;
   font-size: 14px;
+}
+
+.table-scroll table {
+  margin: 0;
 }
 
 .report-html th,
@@ -385,6 +393,13 @@ input:focus-visible {
 
 .report-html tbody tr:nth-child(even) {
   background: #f2f4f7;
+}
+
+/* Суммы и даты (класс вешает renderMarkdownReport) не переносятся:
+   цифры сверяют с документами, столбик из обрывков не читается. */
+.report-html td.td-amount {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .report-html blockquote {
@@ -465,7 +480,9 @@ input:focus-visible {
   gap: 4px 14px;
   margin: 6px 0 0;
   color: var(--muted);
-  font-size: 11.5px;
+  /* 12.5px — нижняя граница кегля для кириллицы в этом UI:
+     мельче Segoe UI/Roboto теряют рисунок русских букв. */
+  font-size: 12.5px;
   line-height: 1.5;
 }
 
@@ -515,11 +532,12 @@ input:focus-visible {
   stroke-dasharray: 4 4;
 }
 
+/* Подписи осей без капса: кириллический капс мелким кеглем сливается
+   в однородные прямоугольники, а SVG на мобилке ещё и масштабируется вниз.
+   Обычный кейс + кегль крупнее = читаемо после сжатия. */
 .radar-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  font-size: 12.5px;
+  font-weight: 600;
   fill: var(--text);
 }
 
@@ -528,9 +546,9 @@ input:focus-visible {
 }
 
 .radar-label-value {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
-  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
 }
 
 .radar-band--strong {
@@ -566,8 +584,9 @@ polyline.radar-value {
   stroke-width: 1.5;
 }
 
-/* Момент "замер готов": полигон расцветает из центра, точки догоняют.
-   Центр анимации = центр радара (210,150 - середина viewBox 420x300). */
+/* Момент "замер готов": полигон расцветает из центра радара, точки
+   догоняют. Точный origin (cx/cy текущей геометрии) ставит drawRadar
+   инлайн-стилем; center здесь — запасное значение. */
 @media (prefers-reduced-motion: no-preference) {
   .radar-value {
     transform-box: view-box;
@@ -776,7 +795,7 @@ polyline.radar-value {
   margin: 0;
   padding: 0 14px 12px 32px;
   color: #344054;
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.5;
 }
 
@@ -816,18 +835,10 @@ polyline.radar-value {
     padding: 20px;
   }
 
-  .input-row,
-  .result-header {
-    grid-template-columns: 1fr;
-  }
-
-  .input-row {
-    display: grid;
-  }
-
   .result-header {
     align-items: stretch;
     flex-direction: column;
+    padding: 18px 16px;
   }
 
   .report-link {
@@ -839,20 +850,29 @@ polyline.radar-value {
     grid-template-columns: 1fr;
   }
 
-  /* На узком экране 11 разделов дают 5-6 рядов кнопок - прилипший TOC
-     съел бы пол-экрана. Пусть уезжает вместе с прокруткой. */
+  /* Узкие панели: паддинги 24px съедали шестую часть 360px-экрана,
+     таблицам и радару нужнее. */
+  .scores-panel,
+  .waiting-card {
+    padding: 18px 16px;
+  }
+
+  .report-html {
+    padding: 16px;
+  }
+
   .report-toc {
+    /* На узком экране 11 разделов дают 5-6 рядов кнопок - прилипший TOC
+       съел бы пол-экрана. Пусть уезжает вместе с прокруткой. */
     position: static;
+    margin: -16px -16px 14px;
+    padding: 10px 16px;
   }
 
   .report-html h2[id^="report-section"],
   .report-html h3[id^="report-section"] {
     scroll-margin-top: 12px;
   }
-}
-
-.two-cols {
-  grid-template-columns: 1fr 1fr;
 }
 
 .candidate-list {
@@ -886,16 +906,18 @@ polyline.radar-value {
   flex-shrink: 0;
 }
 
-/* Статус из реестра - как штамп на документе: контур, разрядка */
+/* Статус из реестра - как штамп на документе: контур, разрядка.
+   12px и умеренная разрядка: капс «ПОДТВЕРДИТЕ» кириллицей при 11px
+   с 0.08em расползался в нечитаемый частокол. */
 .badge {
   padding: 2px 9px;
   border: 1.5px solid currentColor;
   border-radius: 4px;
   background: transparent;
   color: var(--accent-dark);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.05em;
   text-transform: uppercase;
 }
 
@@ -909,12 +931,6 @@ polyline.radar-value {
   font-size: 13px;
   letter-spacing: 0.03em;
   font-variant-numeric: tabular-nums;
-}
-
-.label-hint {
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 400;
 }
 
 .candidate-card dl {

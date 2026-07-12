@@ -158,6 +158,7 @@ Open <http://localhost:8080>. Reports and their evidence JSON are written to
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `GOOGLE_API_KEY` / `TAVILY_API_KEY` | — | LLM and web-search credentials |
+| `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` | `false` / — | Agent observability: per-run ReAct trace, tool calls, tokens |
 | `RATE_LIMIT_GLOBAL_PER_DAY` | `50` | Hard daily ceiling on report builds |
 | `RATE_LIMIT_IP_PER_DAY` | `10` | Per-IP daily ceiling |
 | `TRUSTED_PROXY_HOPS` | `0` | Trusted proxy hops right of the client IP in `X-Forwarded-For` |

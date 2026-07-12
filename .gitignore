@@ -227,3 +227,7 @@ logs/
 # Generated health-check reports (Markdown + evidence JSON): regenerated per run,
 # go stale fast, and evidence bundles will carry CRBR beneficiary PII. Not versioned.
 reports/
+
+# Personal sales playbook: lead lists with owner PII and outreach strategy.
+# The repo is public - never publish these.
+PLAYBOOK-*.md

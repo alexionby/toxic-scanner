@@ -61,11 +61,20 @@ async def company_health_check_endpoint(
     report_path = save_markdown_report(company.name, result.report_markdown)
     evidence_path = save_evidence_json(company.name, result.evidence)
 
+    # Плоские числа стоимости рана - по ним в PostHog строится тренд
+    # "сколько ест один отчёт" (токены -> прайс Gemini, поиски -> кредиты Tavily).
+    stats = result.evidence.get("agent_stats", {})
+    tool_calls = stats.get("tool_calls", {})
     track(
         "report_built",
         distinct_id=distinct_id_from_ip(client_ip(http_request)),
         krs=krs,
         company=company.name,
+        llm_calls=stats.get("llm_calls"),
+        input_tokens=stats.get("input_tokens"),
+        output_tokens=stats.get("output_tokens"),
+        web_searches=tool_calls.get("web_search", 0),
+        page_reads=tool_calls.get("extract_website_text", 0),
     )
 
     return {

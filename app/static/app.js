@@ -18,6 +18,22 @@ DOMPurify.addHook("afterSanitizeAttributes", (node) => {
 function renderMarkdownReport(markdown) {
   const html = marked.parse(markdown ?? "", { async: false });
   reportOutput.innerHTML = DOMPurify.sanitize(html);
+  // Широкая таблица (финансы по годам) скроллится в собственной обёртке,
+  // иначе она раскатывает всю страницу за край вьюпорта на телефоне.
+  for (const table of reportOutput.querySelectorAll("table")) {
+    const wrap = document.createElement("div");
+    wrap.className = "table-scroll";
+    table.replaceWith(wrap);
+    wrap.append(table);
+    // Сумма, разорванная на три строки («50 311 436 PLN»), не сверяется
+    // глазами. Числовым ячейкам — перенос запрещён: пусть лучше таблица
+    // уедет в скролл обёртки, чем колонка цифр сложится в столбик.
+    for (const td of table.querySelectorAll("td")) {
+      if (/^[\d\s.,%–—-]+(PLN|zł)?$/iu.test(td.textContent.trim())) {
+        td.classList.add("td-amount");
+      }
+    }
+  }
   buildReportToc();
 }
 
@@ -84,10 +100,24 @@ function scoreBand(value) {
   return "weak";
 }
 
-// cx с запасом под боковые подписи (слева "ПРОЗРАЧНОСТЬ 100" ~122px):
-// они анкорятся снаружи осей и не должны вылезать за viewBox 460x300.
-// cx/cy держим в центре viewBox - от него расцветает анимация полигона.
-const RADAR = { cx: 230, cy: 150, r: 95 };
+// Две геометрии радара. На десктопе SVG живёт в колонке ~400px; на
+// телефоне рисуется во всю ширину, но CSS-ширина всего ~300px — если
+// сжимать десктопный viewBox 460px, подписи осей мельчают до ~8px.
+// Компактный пресет уменьшает поле и радиус вместо шрифта.
+// cx смещён вправо от центра: запас слева — под самую длинную боковую
+// подпись («Прозрачность 100» ~112px), она анкорится снаружи оси и не
+// должна вылезать за viewBox.
+const RADAR_PRESETS = {
+  wide: { cx: 230, cy: 150, r: 95, labelOffset: 16, width: 460, height: 300 },
+  compact: { cx: 196, cy: 114, r: 66, labelOffset: 12, width: 350, height: 228 },
+};
+
+// Единая точка перелома с CSS (@media max-width: 720px).
+const compactRadarQuery = window.matchMedia("(max-width: 720px)");
+
+function currentRadar() {
+  return compactRadarQuery.matches ? RADAR_PRESETS.compact : RADAR_PRESETS.wide;
+}
 
 function axisValue(axis) {
   return typeof axis?.value === "number"
@@ -97,7 +127,8 @@ function axisValue(axis) {
 
 function polarPoint(angleDeg, radius) {
   const rad = (angleDeg * Math.PI) / 180;
-  return [RADAR.cx + radius * Math.cos(rad), RADAR.cy + radius * Math.sin(rad)];
+  const { cx, cy } = currentRadar();
+  return [cx + radius * Math.cos(rad), cy + radius * Math.sin(rad)];
 }
 
 function axisAngle(index) {
@@ -113,11 +144,13 @@ function svgEl(name, attrs) {
 }
 
 function drawRadar(scores) {
+  const R = currentRadar();
+  radarChart.setAttribute("viewBox", `0 0 ${R.width} ${R.height}`);
   radarChart.replaceChildren();
 
   for (const level of [25, 50, 75, 100]) {
     const points = SCORE_AXES.map((_, i) =>
-      polarPoint(axisAngle(i), (RADAR.r * level) / 100).join(",")
+      polarPoint(axisAngle(i), (R.r * level) / 100).join(",")
     ).join(" ");
     radarChart.append(svgEl("polygon", { points, class: "radar-grid" }));
   }
@@ -128,11 +161,11 @@ function drawRadar(scores) {
     const band = scoreBand(value);
     const angle = axisAngle(i);
 
-    const [x2, y2] = polarPoint(angle, RADAR.r);
+    const [x2, y2] = polarPoint(angle, R.r);
     radarChart.append(
       svgEl("line", {
-        x1: RADAR.cx,
-        y1: RADAR.cy,
+        x1: R.cx,
+        y1: R.cy,
         x2,
         y2,
         class: value === null ? "radar-axis radar-axis-null" : "radar-axis",
@@ -141,11 +174,11 @@ function drawRadar(scores) {
 
     // Подпись оси несёт и значение: имя + число в цвете полосы,
     // чтобы звезда читалась без списка справа.
-    const [lx, ly] = polarPoint(angle, RADAR.r + 16);
+    const [lx, ly] = polarPoint(angle, R.r + R.labelOffset);
     const anchor =
-      Math.abs(lx - RADAR.cx) < 6 ? "middle" : lx > RADAR.cx ? "start" : "end";
+      Math.abs(lx - R.cx) < 6 ? "middle" : lx > R.cx ? "start" : "end";
     const baseline =
-      ly < RADAR.cy - 6 ? "auto" : ly > RADAR.cy + 6 ? "hanging" : "middle";
+      ly < R.cy - 6 ? "auto" : ly > R.cy + 6 ? "hanging" : "middle";
     const text = svgEl("text", {
       x: lx,
       y: ly,
@@ -164,15 +197,17 @@ function drawRadar(scores) {
     radarChart.append(text);
 
     if (value !== null) {
-      valuePoints.push({ point: polarPoint(angle, (RADAR.r * value) / 100), band });
+      valuePoints.push({ point: polarPoint(angle, (R.r * value) / 100), band });
     }
   });
 
   const pointsAttr = valuePoints.map((v) => v.point.join(",")).join(" ");
   if (valuePoints.length >= 3) {
-    radarChart.append(
-      svgEl("polygon", { points: pointsAttr, class: "radar-value" })
-    );
+    const polygon = svgEl("polygon", { points: pointsAttr, class: "radar-value" });
+    // Анимация расцветает из центра радара; в компактной геометрии он
+    // смещён от центра viewBox, CSS-ное transform-origin: center не годится.
+    polygon.style.transformOrigin = `${R.cx}px ${R.cy}px`;
+    radarChart.append(polygon);
   } else if (valuePoints.length === 2) {
     radarChart.append(
       svgEl("polyline", { points: pointsAttr, class: "radar-value" })
@@ -250,11 +285,17 @@ function renderScoresList(scores) {
   }
 }
 
+// Последние оценки — чтобы перерисовать радар при смене геометрии
+// (поворот телефона, ресайз окна через брейкпоинт).
+let lastScores = null;
+
 function renderScores(scores) {
   if (!scores || typeof scores !== "object") {
+    lastScores = null;
     scoresPanel.classList.add("is-hidden");
     return;
   }
+  lastScores = scores;
   drawRadar(scores);
   renderScoresList(scores);
   scoresVerdict.textContent = buildVerdict(scores);
@@ -358,9 +399,7 @@ paywallForm.addEventListener("submit", (event) => {
 // --- Company Resolver (v0) ---
 
 const resolverForm = document.querySelector("#resolver-form");
-const resolverName = document.querySelector("#resolver-name");
-const resolverNip = document.querySelector("#resolver-nip");
-const resolverKrs = document.querySelector("#resolver-krs");
+const resolverQuery = document.querySelector("#resolver-query");
 const resolverButton = document.querySelector("#resolver-submit");
 const resolverStatus = document.querySelector("#resolver-status");
 const resolverResult = document.querySelector("#resolver-result");
@@ -371,11 +410,41 @@ const onboarding = document.querySelector("#onboarding");
 // Кнопки-примеры в пустом состоянии: подставляют KRS и сразу ищут
 for (const button of document.querySelectorAll(".example-button")) {
   button.addEventListener("click", () => {
-    resolverName.value = "";
-    resolverNip.value = "";
-    resolverKrs.value = button.dataset.krs;
+    resolverQuery.value = button.dataset.krs;
     resolverForm.requestSubmit();
   });
+}
+
+// Единое поле поиска: тип ввода определяем сами, как gowork.pl.
+// NIP и KRS не пересекаются в 10-значном пространстве: NIP не начинается
+// с нуля (первые три цифры — код налоговой, все >= 101), а 10-значный KRS
+// всегда с ведущими нулями (номера едва перевалили за миллион). KRS без
+// ведущих нулей — это <= 8 цифр; ровно 9 или 14 цифр — REGON.
+function classifyQuery(raw) {
+  const digits = raw
+    .replace(/^(?:PL|NIP|KRS)[\s:.-]*/i, "")
+    .replace(/[\s.-]/g, "");
+  if (!/^\d+$/.test(digits)) {
+    return { kind: "name", payload: { company_name: raw } };
+  }
+  if (digits.length === 9 || digits.length === 14) {
+    return {
+      error:
+        "Похоже на REGON — по нему пока не ищем. Введите NIP, KRS или название компании.",
+    };
+  }
+  if (digits.length === 10) {
+    return digits.startsWith("0")
+      ? { kind: "krs", payload: { krs: digits } }
+      : { kind: "nip", payload: { nip: digits } };
+  }
+  if (digits.length <= 8) {
+    return { kind: "krs", payload: { krs: digits.padStart(10, "0") } };
+  }
+  return {
+    error:
+      "Не похоже ни на NIP, ни на KRS (оба — до 10 цифр). Проверьте номер или введите название.",
+  };
 }
 
 function showRawResponse(text) {
@@ -491,38 +560,40 @@ const waitingElapsed = document.querySelector("#waiting-elapsed");
 
 const WAIT_STAGES = [
   { text: "Читаю одпис KRS — государственный реестр", at: 0 },
-  { text: "Собираю финансовые показатели с агрегаторов", at: 4 },
-  { text: "Ищу отзывы сотрудников: GoWork, Reddit", at: 25 },
-  { text: "Считаю оси звезды и собираю отчёт", at: 80 },
+  { text: "Читаю сайт компании и свежие новости", at: 4 },
+  { text: "Ищу активные вакансии и LinkedIn-сигналы", at: 25 },
+  { text: "Собираю пульс-отчёт: изменения, инициативы, потребности", at: 80 },
 ];
 
 let waitingTimer = null;
 
 function drawSkeletonRadar() {
+  const R = currentRadar();
+  waitingRadar.setAttribute("viewBox", `0 0 ${R.width} ${R.height}`);
   waitingRadar.replaceChildren();
   for (const level of [25, 50, 75, 100]) {
     const points = SCORE_AXES.map((_, i) =>
-      polarPoint(axisAngle(i), (RADAR.r * level) / 100).join(",")
+      polarPoint(axisAngle(i), (R.r * level) / 100).join(",")
     ).join(" ");
     waitingRadar.append(svgEl("polygon", { points, class: "radar-grid" }));
   }
   SCORE_AXES.forEach(([, label], i) => {
     const angle = axisAngle(i);
-    const [x2, y2] = polarPoint(angle, RADAR.r);
+    const [x2, y2] = polarPoint(angle, R.r);
     waitingRadar.append(
       svgEl("line", {
-        x1: RADAR.cx,
-        y1: RADAR.cy,
+        x1: R.cx,
+        y1: R.cy,
         x2,
         y2,
         class: "radar-axis radar-axis-null",
       })
     );
-    const [lx, ly] = polarPoint(angle, RADAR.r + 16);
+    const [lx, ly] = polarPoint(angle, R.r + R.labelOffset);
     const anchor =
-      Math.abs(lx - RADAR.cx) < 6 ? "middle" : lx > RADAR.cx ? "start" : "end";
+      Math.abs(lx - R.cx) < 6 ? "middle" : lx > R.cx ? "start" : "end";
     const baseline =
-      ly < RADAR.cy - 6 ? "auto" : ly > RADAR.cy + 6 ? "hanging" : "middle";
+      ly < R.cy - 6 ? "auto" : ly > R.cy + 6 ? "hanging" : "middle";
     const text = svgEl("text", {
       x: lx,
       y: ly,
@@ -584,6 +655,17 @@ function stopWaiting() {
   waitingCard.classList.add("is-hidden");
 }
 
+// Пересечение брейкпоинта (поворот телефона, ресайз окна) — радар
+// перерисовывается в подходящей геометрии, какой бы из двух ни был виден.
+compactRadarQuery.addEventListener("change", () => {
+  if (lastScores) {
+    drawRadar(lastScores);
+  }
+  if (!waitingCard.classList.contains("is-hidden")) {
+    drawSkeletonRadar();
+  }
+});
+
 async function buildHealthCheck(candidate, buttonEl) {
   const idleLabel = buttonEl.textContent;
   buttonEl.disabled = true;
@@ -642,25 +724,28 @@ async function buildHealthCheck(candidate, buttonEl) {
 resolverForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
-  const payload = {
-    company_name: resolverName.value.trim() || null,
-    nip: resolverNip.value.trim() || null,
-    krs: resolverKrs.value.trim() || null,
-  };
-
-  if (!payload.company_name && !payload.nip && !payload.krs) {
+  const raw = resolverQuery.value.trim();
+  if (!raw) {
     setResolverStatus("Укажите название компании, NIP или KRS.", true);
     return;
   }
 
+  const parsed = classifyQuery(raw);
+  if (parsed.error) {
+    setResolverStatus(parsed.error, true);
+    return;
+  }
+  const payload = { company_name: null, nip: null, krs: null, ...parsed.payload };
+
   // Поиск по названию идёт через web search + верификацию в реестрах,
-  // это заметно дольше прямого lookup по номеру.
-  const isNameSearch = !payload.nip && !payload.krs;
+  // это заметно дольше прямого lookup по номеру. В статусе показываем,
+  // как распознали ввод, — вместо трёх полей это единственная подсказка.
+  const isNameSearch = parsed.kind === "name";
   resolverButton.disabled = true;
   setResolverStatus(
     isNameSearch
-      ? "Ищу кандидатов в вебе и проверяю каждого по официальным реестрам (10–30 секунд)..."
-      : "Ищу..."
+      ? "Ищу по названию: кандидаты из веба, каждого проверяю по официальным реестрам (10–30 секунд)..."
+      : `Ищу по ${parsed.kind.toUpperCase()} ${payload.nip ?? payload.krs}...`
   );
   resolverResult.replaceChildren();
   resolverRaw.classList.add("is-hidden");
