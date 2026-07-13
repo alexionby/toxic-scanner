@@ -1,4 +1,4 @@
-"""Company Resolver - точный путь по NIP/KRS плюс discovery по названию.
+"""Company Resolver - точный путь по NIP/KRS/REGON плюс discovery по названию.
 
 Точный идентификатор даёт одного кандидата с confidence=1.0.
 Поиск по названию - полуавтомат: Tavily находит упоминания с KRS/NIP
@@ -41,21 +41,28 @@ def resolve_company(query: CompanyQuery) -> list[CompanyCandidate]:
         return [_to_candidate(hit)] if hit else []
 
     if query.nip:
-        whitelist_hit = vat_whitelist.lookup_by_nip(query.nip)
-        if whitelist_hit is None:
-            return []
+        return _from_whitelist_hit(vat_whitelist.lookup_by_nip(query.nip))
 
-        if whitelist_hit.krs:
-            full_profile = krs.get_company_profile(whitelist_hit.krs)
-            if full_profile is not None:
-                return [_to_candidate(full_profile)]
-
-        return [_to_candidate(whitelist_hit)]
+    if query.regon:
+        return _from_whitelist_hit(vat_whitelist.lookup_by_regon(query.regon))
 
     if query.company_name:
         return _resolve_by_name(query.company_name, query.country)
 
     return []
+
+
+def _from_whitelist_hit(whitelist_hit: RawCompanyHit | None) -> list[CompanyCandidate]:
+    """Кандидат из белой листы VAT, при наличии KRS — обогащённый одписом."""
+    if whitelist_hit is None:
+        return []
+
+    if whitelist_hit.krs:
+        full_profile = krs.get_company_profile(whitelist_hit.krs)
+        if full_profile is not None:
+            return [_to_candidate(full_profile)]
+
+    return [_to_candidate(whitelist_hit)]
 
 
 def _resolve_by_name(company_name: str, country: str) -> list[CompanyCandidate]:

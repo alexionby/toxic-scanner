@@ -1,23 +1,35 @@
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import financial_health
+from app import jobs
 from app.companies import resolve_company
-from app.evidence import REPORTS_DIR, save_evidence_json, save_markdown_report
+from app.evidence import REPORTS_DIR
 from app.models import CompanyQuery, CompanySearchResponse
 from app.ratelimit import client_ip, enforce_report_quota
 from app.telemetry import distinct_id_from_ip, record_waitlist_email, track
 
 load_dotenv()
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # Воркеры джобов живут вместе с процессом: стартуют до первого
+    # запроса, при остановке отменяются (in-flight раны обрываются -
+    # стор в памяти всё равно не переживает рестарт).
+    jobs.start_workers()
+    yield
+    await jobs.stop_workers()
+
+
 # Инициализация FastAPI
-app = FastAPI(title="Toxic Scanner API")
+app = FastAPI(title="Toxic Scanner API", lifespan=lifespan)
 STATIC_DIR = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -42,53 +54,69 @@ async def companies_search_endpoint(query: CompanyQuery) -> CompanySearchRespons
     return CompanySearchResponse(candidates=candidates)
 
 
-@app.post("/companies/{krs}/health-check")
+@app.post("/companies/{krs}/health-check", status_code=202)
 async def company_health_check_endpoint(
     krs: str, http_request: Request, _: None = Depends(enforce_report_quota)
 ):
+    """Принять заявку на отчёт: вернуть квитанцию, не результат.
+
+    Ран агента занимает минуты - в запросе делаем только быстрое
+    (резолв компании, чтобы 404 по несуществующему KRS отдать сразу),
+    сам ран уходит в очередь. 202 + Location - стандартный REST-ответ
+    "принял, статус вон там".
+    """
     candidates = await asyncio.to_thread(resolve_company, CompanyQuery(krs=krs))
     if not candidates:
         raise HTTPException(
             status_code=404, detail=f"Компания с KRS {krs} не найдена в реестре"
         )
-    company = candidates[0]
 
-    try:
-        result = await asyncio.to_thread(financial_health.run_health_check, company)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    report_path = save_markdown_report(company.name, result.report_markdown)
-    evidence_path = save_evidence_json(company.name, result.evidence)
-
-    # Плоские числа стоимости рана - по ним в PostHog строится тренд
-    # "сколько ест один отчёт" (токены -> прайс Gemini, поиски -> кредиты Tavily).
-    stats = result.evidence.get("agent_stats", {})
-    tool_calls = stats.get("tool_calls", {})
-    track(
-        "report_built",
-        distinct_id=distinct_id_from_ip(client_ip(http_request)),
-        krs=krs,
-        company=company.name,
-        llm_calls=stats.get("llm_calls"),
-        input_tokens=stats.get("input_tokens"),
-        output_tokens=stats.get("output_tokens"),
-        web_searches=tool_calls.get("web_search", 0),
-        page_reads=tool_calls.get("extract_website_text", 0),
+    job = jobs.submit_job(
+        candidates[0], distinct_id_from_ip(client_ip(http_request))
+    )
+    status_url = str(http_request.url_for("get_job", job_id=job.id))
+    return JSONResponse(
+        status_code=202,
+        content={"job_id": job.id, "status": job.status, "status_url": status_url},
+        headers={"Location": status_url},
     )
 
-    return {
-        "company": company.model_dump(),
-        "status": "success",
-        "report": result.report_markdown,
-        "scores": result.scores,
-        "report_file": str(report_path),
-        "report_url": str(http_request.url_for("get_report", filename=report_path.name)),
-        "evidence_file": str(evidence_path),
-        "evidence_url": str(
-            http_request.url_for("get_report", filename=evidence_path.name)
-        ),
+
+@app.get("/jobs/{job_id}", name="get_job")
+async def get_job_endpoint(job_id: str, http_request: Request):
+    job = jobs.get_job(job_id)
+    if job is None:
+        # Либо опечатка в id, либо процесс перезапустился и стор в
+        # памяти опустел - для клиента это одно и то же "джобы нет".
+        raise HTTPException(status_code=404, detail="Джоба не найдена")
+
+    body: dict = {
+        "job_id": job.id,
+        "status": job.status,
+        "company": job.company.name,
+        "created_at": job.created_at.isoformat(),
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
     }
+    if job.status is jobs.JobStatus.FAILED:
+        body["error"] = job.error
+    if job.status is jobs.JobStatus.SUCCEEDED and job.result:
+        # Воркер сохранил данные и имена файлов; URL-ы строим здесь -
+        # базовый адрес сервера известен только в контексте запроса.
+        body["result"] = {
+            **{k: v for k, v in job.result.items() if not k.endswith("_filename")},
+            "report_url": str(
+                http_request.url_for(
+                    "get_report", filename=job.result["report_filename"]
+                )
+            ),
+            "evidence_url": str(
+                http_request.url_for(
+                    "get_report", filename=job.result["evidence_filename"]
+                )
+            ),
+        }
+    return body
 
 
 class InterestSignal(BaseModel):

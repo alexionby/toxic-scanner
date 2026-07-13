@@ -415,35 +415,64 @@ for (const button of document.querySelectorAll(".example-button")) {
   });
 }
 
+// Контрольные суммы официальных идентификаторов: опечатку ловим сразу,
+// не гоняя пользователя в реестр за обманчивым «ничего не найдено».
+const NIP_WEIGHTS = [6, 5, 7, 2, 3, 4, 5, 6, 7];
+function isValidNip(digits) {
+  const sum = NIP_WEIGHTS.reduce((acc, w, i) => acc + w * Number(digits[i]), 0);
+  // сумма mod 11 == 10 у настоящих NIP не встречается
+  return sum % 11 !== 10 && sum % 11 === Number(digits[9]);
+}
+
+const REGON_WEIGHTS = [8, 9, 2, 3, 4, 5, 6, 7];
+function isValidRegon(digits) {
+  const sum = REGON_WEIGHTS.reduce((acc, w, i) => acc + w * Number(digits[i]), 0);
+  // у REGON, в отличие от NIP, сумма mod 11 == 10 значит контрольную цифру 0
+  return (sum % 11) % 10 === Number(digits[8]);
+}
+
 // Единое поле поиска: тип ввода определяем сами, как gowork.pl.
 // NIP и KRS не пересекаются в 10-значном пространстве: NIP не начинается
 // с нуля (первые три цифры — код налоговой, все >= 101), а 10-значный KRS
 // всегда с ведущими нулями (номера едва перевалили за миллион). KRS без
-// ведущих нулей — это <= 8 цифр; ровно 9 или 14 цифр — REGON.
+// ведущих нулей — это <= 8 цифр; 9 или 14 цифр — REGON.
 function classifyQuery(raw) {
   const digits = raw
-    .replace(/^(?:PL|NIP|KRS)[\s:.-]*/i, "")
+    .replace(/^(?:PL|NIP|KRS|REGON)[\s:.-]*/i, "")
     .replace(/[\s.-]/g, "");
   if (!/^\d+$/.test(digits)) {
     return { kind: "name", payload: { company_name: raw } };
   }
   if (digits.length === 9 || digits.length === 14) {
-    return {
-      error:
-        "Похоже на REGON — по нему пока не ищем. Введите NIP, KRS или название компании.",
-    };
+    // 14-значный REGON — «локальная единица»; базовый номер юр. лица
+    // с собственной контрольной цифрой лежит в первых девяти позициях.
+    const base = digits.slice(0, 9);
+    if (!isValidRegon(base)) {
+      return {
+        error:
+          "Похоже на REGON, но контрольная сумма не сходится — в номере опечатка.",
+      };
+    }
+    return { kind: "regon", payload: { regon: base } };
   }
   if (digits.length === 10) {
-    return digits.startsWith("0")
-      ? { kind: "krs", payload: { krs: digits } }
-      : { kind: "nip", payload: { nip: digits } };
+    if (digits.startsWith("0")) {
+      return { kind: "krs", payload: { krs: digits } };
+    }
+    if (!isValidNip(digits)) {
+      return {
+        error:
+          "Похоже на NIP, но контрольная сумма не сходится — в номере опечатка.",
+      };
+    }
+    return { kind: "nip", payload: { nip: digits } };
   }
   if (digits.length <= 8) {
     return { kind: "krs", payload: { krs: digits.padStart(10, "0") } };
   }
   return {
     error:
-      "Не похоже ни на NIP, ни на KRS (оба — до 10 цифр). Проверьте номер или введите название.",
+      "Столько цифр не бывает ни у NIP/KRS (10 знаков), ни у REGON (9 или 14). Проверьте номер или введите название.",
   };
 }
 
@@ -566,6 +595,17 @@ const WAIT_STAGES = [
 ];
 
 let waitingTimer = null;
+// Реальный статус джобы с сервера (queued/running) и момент старта
+// рана: этапы сцены ожидания отсчитываются от выхода из очереди.
+let currentJobStatus = null;
+let waitingStartedAt = 0;
+
+function noteJobStatus(status) {
+  if (status === "running" && currentJobStatus !== "running") {
+    waitingStartedAt = Date.now();
+  }
+  currentJobStatus = status;
+}
 
 function drawSkeletonRadar() {
   const R = currentRadar();
@@ -634,9 +674,17 @@ function startWaiting(companyName) {
     waitingStages.append(li);
   }
 
-  const startedAt = Date.now();
+  currentJobStatus = null;
+  waitingStartedAt = Date.now();
   const tick = () => {
-    const elapsed = Math.round((Date.now() - startedAt) / 1000);
+    const elapsed = Math.round((Date.now() - waitingStartedAt) / 1000);
+    // Пока джоба в очереди (все воркеры заняты), этапы не идут -
+    // честно показываем ожидание вместо фальшивого прогресса.
+    if (currentJobStatus === "queued") {
+      waitingElapsed.textContent = `в очереди ${elapsed} с — ждём свободного воркера`;
+      renderWaitingStages(0);
+      return;
+    }
     waitingElapsed.textContent = `идёт ${elapsed} с · обычно 30–120 секунд`;
     renderWaitingStages(elapsed);
   };
@@ -665,6 +713,47 @@ compactRadarQuery.addEventListener("change", () => {
     drawSkeletonRadar();
   }
 });
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Поллинг статуса джобы. Интервал 2.5с - компромисс: чаще незачем
+// (ран идёт минуты), реже - заметная задержка показа готового отчёта.
+// Дедлайн - предохранитель от вечного спиннера, если джоба зависла.
+const JOB_POLL_INTERVAL_MS = 2500;
+const JOB_POLL_DEADLINE_MS = 10 * 60 * 1000;
+
+async function pollJob(statusUrl) {
+  const deadline = Date.now() + JOB_POLL_DEADLINE_MS;
+  while (Date.now() < deadline) {
+    const response = await fetch(statusUrl);
+
+    if (response.status === 404) {
+      // Стор джобов живёт в памяти процесса: 404 на поллинге значит,
+      // что сервер перезапустился и джоба потерялась.
+      throw new Error(
+        "Джоба потерялась (сервер перезапустился). Запустите отчёт ещё раз."
+      );
+    }
+    if (!response.ok) {
+      throw new Error(`Ошибка статуса джобы (HTTP ${response.status})`);
+    }
+
+    const data = await response.json();
+    noteJobStatus(data.status);
+
+    if (data.status === "succeeded") {
+      return data.result;
+    }
+    if (data.status === "failed") {
+      throw new Error(`Ошибка отчёта: ${data.error ?? "неизвестная ошибка"}`);
+    }
+
+    await sleep(JOB_POLL_INTERVAL_MS);
+  }
+  throw new Error(
+    "Отчёт строится дольше 10 минут — что-то пошло не так. Попробуйте позже."
+  );
+}
 
 async function buildHealthCheck(candidate, buttonEl) {
   const idleLabel = buttonEl.textContent;
@@ -696,21 +785,24 @@ async function buildHealthCheck(candidate, buttonEl) {
       return;
     }
 
-    if (!response.ok || data === null) {
+    // Сабмит возвращает не отчёт, а квитанцию: 202 + адрес статуса.
+    if (response.status !== 202 || data === null) {
       showRawResponse(`HTTP ${response.status}\n${rawText.slice(0, 2000)}`);
       const detail =
         data && data.detail ? JSON.stringify(data.detail) : rawText.slice(0, 300);
       throw new Error(`Ошибка отчёта (HTTP ${response.status}): ${detail}`);
     }
 
+    const result = await pollJob(data.status_url);
+
     showResult({
-      company: data.company.name,
-      report_url: data.report_url,
-      evidence_url: data.evidence_url,
-      report: data.report,
-      scores: data.scores,
+      company: result.company.name,
+      report_url: result.report_url,
+      evidence_url: result.evidence_url,
+      report: result.report,
+      scores: result.scores,
     });
-    setResolverStatus(`Отчёт готов: ${data.report_file}`);
+    setResolverStatus(`Отчёт готов: ${result.report_file}`);
     resultCard.scrollIntoView({ behavior: "smooth" });
   } catch (error) {
     setResolverStatus(error.message, true);
@@ -726,7 +818,7 @@ resolverForm.addEventListener("submit", async (event) => {
 
   const raw = resolverQuery.value.trim();
   if (!raw) {
-    setResolverStatus("Укажите название компании, NIP или KRS.", true);
+    setResolverStatus("Укажите название компании, NIP, KRS или REGON.", true);
     return;
   }
 
@@ -735,17 +827,23 @@ resolverForm.addEventListener("submit", async (event) => {
     setResolverStatus(parsed.error, true);
     return;
   }
-  const payload = { company_name: null, nip: null, krs: null, ...parsed.payload };
+  const payload = {
+    company_name: null,
+    nip: null,
+    krs: null,
+    regon: null,
+    ...parsed.payload,
+  };
 
   // Поиск по названию идёт через web search + верификацию в реестрах,
   // это заметно дольше прямого lookup по номеру. В статусе показываем,
-  // как распознали ввод, — вместо трёх полей это единственная подсказка.
+  // как распознали ввод, — вместо отдельных полей это единственная подсказка.
   const isNameSearch = parsed.kind === "name";
   resolverButton.disabled = true;
   setResolverStatus(
     isNameSearch
       ? "Ищу по названию: кандидаты из веба, каждого проверяю по официальным реестрам (10–30 секунд)..."
-      : `Ищу по ${parsed.kind.toUpperCase()} ${payload.nip ?? payload.krs}...`
+      : `Ищу по ${parsed.kind.toUpperCase()} ${payload.nip ?? payload.krs ?? payload.regon}...`
   );
   resolverResult.replaceChildren();
   resolverRaw.classList.add("is-hidden");
