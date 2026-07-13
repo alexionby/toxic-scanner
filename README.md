@@ -113,8 +113,8 @@ context (so it never re-guesses them), and its free-text output is scored by
 
 ```mermaid
 flowchart TD
-    REQ["POST /companies/:krs/health-check"] --> POOL["Fact-gathering<br/>(ThreadPoolExecutor · parallel)"]
-    POOL --> KRS["KRS filing<br/>facts · reorganizations"]
+    REQ["POST /companies/:krs/health-check"] --> POOL["Fact-gathering<br/>(ThreadPoolExecutor · 3 in parallel)"]
+    REQ -. "already resolved" .-> KRS["KRS filing<br/>facts · reorganizations"]
     POOL --> CRBR["CRBR<br/>beneficial owners + network"]
     POOL --> FIN["Financials<br/>revenue / profit by year"]
     POOL --> JOB["Vacancies<br/>hiring signal"]
@@ -133,7 +133,7 @@ flowchart TD
     TOOLS -. "web" .-> WS["web_search · Tavily<br/>site → news → LinkedIn"]
     TOOLS -. "read" .-> EX["extract_website_text · Jina<br/>(bot-wall aware)"]
 
-    AGENT -. "no tool call" .-> RAW["report + People/Finances score JSON"]
+    AGENT -. "no tool call" .-> RAW["report + trailing People-axis JSON"]
     RAW --> SCORE["build_scores<br/>4 deterministic axes + People (LLM)"]
     SCORE --> OUT["Markdown → sanitised HTML<br/>+ evidence JSON (full agent trace)"]
 ```
