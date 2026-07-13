@@ -25,8 +25,8 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 # --- ЭНДПОИНТЫ ---
 
 
-@app.get("/healthz")
-async def healthz():
+@app.get("/health")
+async def health():
     # Лёгкая проба живости для Cloud Run: без LLM и внешних вызовов.
     return {"status": "ok"}
 

@@ -180,7 +180,7 @@ These are the decisions worth reading the code for.
   the DOM — untrusted model text is never injected raw.
 
 - **Reproducible builds.** `uv sync --frozen` against a committed lockfile on a
-  slim Python 3.14 base; a `/healthz` probe that touches no external services
+  slim Python 3.14 base; a `/health` probe that touches no external services
   keeps Cloud Run cold-starts honest.
 
 ---
