@@ -20,23 +20,25 @@ crbr.py, и отдаём готовым блоком фактов.
   месяц.
 Оба дают fresh=True; даты не выдумываем (published=None, если не видна).
 
-Каналы ошибок langchain_tavily неочевидны (сверено с исходниками):
-пустая выдача возвращается СТРОКОЙ (ToolException, проглоченный
-BaseTool), а реальные сбои API - словарём {"error": ...} без
-исключения. _tavily_hits разводит их явно: строка = легитимная
-пустота, error-словарь = сбой источника.
+Tavily зовём напрямую по REST (формат сверен с langchain_tavily
+_utilities.py), а не через langchain-обёртку: у обёртки нет сетевого
+таймаута (повисший сокет вешал бы отчёт и утекал потоками), а её
+каналы ошибок неразличимы (пустая выдача - строка, сбой API - словарь
+{"error": ...} без исключения). Прямой вызов даёт честный timeout и
+однозначные исходы: список результатов | пусто | сбой.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
-from langchain_tavily import TavilySearch
+import requests
 
 # Транслитерация польских букв - та же таблица, что строит слаги
 # агрегаторов; здесь ей сверяем города из слагов/выдачи с адресом KRS.
@@ -44,9 +46,9 @@ from app.sources.financials import _PL_TRANSLIT
 
 logger = logging.getLogger(__name__)
 
+_TAVILY_URL = "https://api.tavily.com/search"
 _MAX_RESULTS_PER_QUERY = 10
-# requests внутри langchain_tavily идёт БЕЗ таймаута - ограничиваем
-# ожидание сами, иначе один зависший сокет вешает весь отчёт.
+# Таймаут на сокете: один зависший вызов не должен задерживать отчёт.
 _SEARCH_TIMEOUT_SECONDS = 25
 # Домен, чьему формату заголовков доверяем и чей индекс чистится от
 # закрытых объявлений (живость = свежесть). Поддомены (it.pracuj.pl)
@@ -120,6 +122,11 @@ class JobsResult:
     unconfirmed: list[Vacancy] = field(default_factory=list)
     buckets: dict[str, int] = field(default_factory=dict)
     rejected_namesakes: int = 0
+    # Частичная деградация - НЕ ok=False: сколько из запросов упало и
+    # сколько заголовков не разобралось. Блок промпта обязан оговаривать
+    # это, иначе «вакансий не найдено» звучит увереннее, чем данные.
+    failed_queries: int = 0
+    unparsed_count: int = 0
     queries: list[str] = field(default_factory=list)  # прозрачность в evidence
     notes: list[str] = field(default_factory=list)
 
@@ -269,73 +276,96 @@ def _parse_hit(title: str, url: str, sname: str) -> Vacancy | None:
         company = segments[-2]
         city = _clean_city(segments[-1]) or None
 
-    role = role.strip()
+    # Схлопываем внутренние переводы строк/повторные пробелы: заголовок
+    # выдачи попадает в промпт, многострочный текст ломал бы список фактов.
+    role = " ".join(role.split())
+    company = " ".join(company.split())
     if not role or not company:
         return None
     return Vacancy(title=role, city=city, company=company, source=domain, url=url)
 
 
-def _tavily_hits(tool: TavilySearch, query: str) -> list[dict] | None:
-    """Результаты запроса; [] - легитимная пустота, None - сбой источника.
-
-    См. докстринг модуля: пустая выдача приходит строкой, ошибки API -
-    словарём {'error': ...} без исключения.
-    """
-    raw = tool.invoke({"query": query})
-    if isinstance(raw, str):
-        return []
-    if not isinstance(raw, dict) or raw.get("error"):
-        logger.warning("tavily error for %r: %s", query, raw)
+def _tavily_hits(api_key: str, params: dict) -> list[dict] | None:
+    """Результаты запроса; [] - легитимная пустота, None - сбой источника."""
+    try:
+        response = requests.post(
+            _TAVILY_URL,
+            json=params,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=_SEARCH_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException:
+        logger.warning("tavily request failed for %r", params.get("query"), exc_info=True)
         return None
-    return raw.get("results", [])
+    if response.status_code != 200:
+        logger.warning(
+            "tavily HTTP %s for %r", response.status_code, params.get("query")
+        )
+        return None
+    try:
+        return response.json().get("results", [])
+    except ValueError:
+        logger.warning("tavily non-JSON response for %r", params.get("query"))
+        return None
 
 
 def get_jobs(company_name: str, address: str | None) -> JobsResult:
-    """Активные вакансии компании из поисковой выдачи, с фильтром тёзок."""
-    sname = search_name(company_name)
+    """Активные вакансии компании из поисковой выдачи, с фильтром тёзок.
+
+    Контракт sources: наружу не бросает никогда - любой неожиданный сбой
+    превращается в ok=False с пометкой в notes.
+    """
     result = JobsResult(company_name=company_name)
+    try:
+        return _collect_jobs(result, company_name, address)
+    except Exception:
+        logger.exception("vacancies adapter crashed for %r", company_name)
+        result.ok = False
+        result.notes.append("сбой адаптера вакансий (детали в логах)")
+        return result
+
+
+def _collect_jobs(
+    result: JobsResult, company_name: str, address: str | None
+) -> JobsResult:
+    sname = search_name(company_name)
     result.notes.append(f"поисковое имя: {sname}")
 
-    # Инстансы Tavily создаём внутри функции, не на уровне модуля (порядок
-    # load_dotenv - см. web_search.py). Конструктор читает TAVILY_API_KEY и
-    # может бросить - адаптер наружу не бросает никогда (контракт sources).
-    try:
-        plans = [
-            ("general", TavilySearch(max_results=_MAX_RESULTS_PER_QUERY),
-             f'"{sname}" praca oferty', False),
-            ("pracuj.pl", TavilySearch(max_results=_MAX_RESULTS_PER_QUERY,
-                                       include_domains=[_TRUSTED_DOMAIN]),
-             f'"{sname}" oferty pracy', False),  # свежесть даст сам домен
-            ("fresh-month", TavilySearch(max_results=_MAX_RESULTS_PER_QUERY,
-                                         time_range="month"),
-             f'"{sname}" praca', True),
-        ]
-    except Exception:
-        logger.warning("tavily init failed", exc_info=True)
+    # Ключ читаем в момент вызова, не при импорте (порядок load_dotenv -
+    # см. web_search.py).
+    api_key = os.environ.get("TAVILY_API_KEY", "")
+    if not api_key:
         result.ok = False
-        result.notes.append("поиск вакансий недоступен (нет TAVILY_API_KEY?)")
+        result.notes.append("поиск вакансий недоступен (нет TAVILY_API_KEY)")
         return result
+
+    base = {"max_results": _MAX_RESULTS_PER_QUERY, "topic": "general"}
+    plans = [
+        ("general", {**base, "query": f'"{sname}" praca oferty'}, False),
+        # свежесть этим хитам даст сам домен (см. fresh ниже)
+        ("pracuj.pl",
+         {**base, "query": f'"{sname}" oferty pracy',
+          "include_domains": [_TRUSTED_DOMAIN]}, False),
+        ("fresh-month",
+         {**base, "query": f'"{sname}" praca', "time_range": "month"}, True),
+    ]
 
     parsed: dict[tuple[str, str], Vacancy] = {}  # дедуп по (роль, город)
     unparsed: list[str] = []
-    failures = 0
-    # Запросы независимы - параллелим (тот же приём, что run_health_check).
-    pool = ThreadPoolExecutor(max_workers=len(plans))
-    try:
+    # Запросы независимы - параллелим (тот же приём, что run_health_check);
+    # таймаут стоит на сокете в _tavily_hits, поэтому потоки завершаются
+    # сами и пул можно закрывать обычным способом.
+    with ThreadPoolExecutor(max_workers=len(plans)) as pool:
         futures = [
-            pool.submit(_tavily_hits, tool, query) for _, tool, query, _ in plans
+            pool.submit(_tavily_hits, api_key, params) for _, params, _ in plans
         ]
-        for (label, _tool, query, marks_fresh), future in zip(plans, futures):
-            try:
-                hits = future.result(timeout=_SEARCH_TIMEOUT_SECONDS)
-            except Exception:
-                logger.warning("vacancy search '%s' failed", label, exc_info=True)
-                hits = None
+        for (label, params, marks_fresh), future in zip(plans, futures):
+            hits = future.result()
             if hits is None:
                 result.notes.append(f"поиск '{label}' не удался")
-                failures += 1
+                result.failed_queries += 1
                 continue
-            result.queries.append(f"{label}: {query}")
+            result.queries.append(f"{label}: {params['query']}")
             for item in hits:
                 title = (item.get("title") or "").strip()
                 url = item.get("url") or ""
@@ -354,12 +384,8 @@ def get_jobs(company_name: str, address: str | None) -> JobsResult:
                 else:
                     vacancy.fresh = fresh
                     parsed[key] = vacancy
-    finally:
-        # Повисший вызов не ждём: поток догорит в фоне (у requests внутри
-        # langchain_tavily нет таймаута) - лучше, чем повесить отчёт.
-        pool.shutdown(wait=False, cancel_futures=True)
 
-    if failures == len(plans):
+    if result.failed_queries == len(plans):
         result.ok = False
         return result
 
@@ -401,6 +427,7 @@ def get_jobs(company_name: str, address: str | None) -> JobsResult:
         # Профили работодателей и агрегаторы-архивы не матчатся - это
         # норма, но не теряем молча: счётчик и примеры для отладки.
         unique = list(dict.fromkeys(unparsed))
+        result.unparsed_count = len(unique)
         result.notes.append(
             f"нераспознанных заголовков выдачи: {len(unique)}, "
             f"например: {'; '.join(unique[:3])}"
