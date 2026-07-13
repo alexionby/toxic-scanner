@@ -1,66 +1,49 @@
-"""Адаптер вакансий: активные объявления компании из поисковой выдачи.
+"""Адаптер вакансий: активные объявления pracuj.pl через живой fetch Jina.
 
-Вакансии - ключевой сигнал секции «Текущие инициативы», но трейсы
-показали, что LLM-агент делает один поиск, не открывает найденные
-списки и теряет свежие объявления (детали - PLAN-jobs-source.md).
-Поэтому собираем детерминированно ДО агента, как financials.py и
-crbr.py, и отдаём готовым блоком фактов.
+Tavily (поисковый индекс с лагом) отдавал архивные оферты как активные -
+проверено 0/2 актуальных (см. память проекта). Заменён на Jina Reader,
+который читает ЖИВУЮ страницу поиска pracuj.pl в момент запроса: только
+открытые оферты, с настоящей датой публикации, работодателем и его ID
+профиля. Jina - сам фетчер (до pracuj.pl идёт её IP), поэтому прод
+(Cloud Run) и дев ведут себя одинаково, прод-IP-бан тут не при чём.
 
-Источник - выдача Tavily (лицензированный поисковый API), сайты
-вакансий не скрейпим: карточки pracuj.pl под ботозащитой (HTTP 403),
-но заголовки выдачи стабильного формата «Oferta pracy {роль},
-{компания}, {город}» отдают всё нужное без открытия страницы
-(проверено руками, 07.2026). Tavily обрезает длинные заголовки
-многоточием - разбор явно учитывает, какой хвост потерян.
+Разметку Jina (markdown) разбираем по якорям:
+- `## [Роль](.../oferta,{offerId})` - заголовок оферты (роль + id);
+- `### [Работодатель](.../company/{empId}?pid={offerId})` - работодатель
+  привязан к оферте через pid, совпадающий с offerId (надёжнее позиции);
+- `#### Город` и `Opublikowana: {дата}` - по ближайшей позиции.
 
-Свежесть: дат публикации в выдаче нет, вместо них два маркера:
-- живость pracuj.pl - закрытые объявления снимаются и выпадают из
-  индекса, карточка в выдаче почти наверняка открыта сейчас;
-- запрос с time_range="month" - результат индексирован за последний
-  месяц.
-Оба дают fresh=True; даты не выдумываем (published=None, если не видна).
+Фильтр тёзок - по имени работодателя (pracuj.pl отдаёт его явно): keyword
+-поиск `;kw` матчит слово в тексте вакансии, поэтому по «varia» приходят
+73 чужие оферты - все отсекаются несовпадением работодателя.
 
-Tavily зовём напрямую по REST (формат сверен с langchain_tavily
-_utilities.py), а не через langchain-обёртку: у обёртки нет сетевого
-таймаута (повисший сокет вешал бы отчёт и утекал потоками), а её
-каналы ошибок неразличимы (пустая выдача - строка, сбой API - словарь
-{"error": ...} без исключения). Прямой вызов даёт честный timeout и
-однозначные исходы: список результатов | пусто | сбой.
+Юридика: как okredo/aleo - вторичное чтение публичной выдачи через
+лицензированный ридер (pracuj.pl отдаёт чистый 200, не бан); ToS-cleanup
+до монетизации, не красная линия.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import re
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
+from urllib.parse import quote
 
 import requests
 
 # Транслитерация польских букв - та же таблица, что строит слаги
-# агрегаторов; здесь ей сверяем города из слагов/выдачи с адресом KRS.
+# агрегаторов; здесь ей нормализуем имена для сверки работодателя.
 from app.sources.financials import _PL_TRANSLIT
 
 logger = logging.getLogger(__name__)
 
-_TAVILY_URL = "https://api.tavily.com/search"
-_MAX_RESULTS_PER_QUERY = 10
-# Таймаут на сокете: один зависший вызов не должен задерживать отчёт.
-_SEARCH_TIMEOUT_SECONDS = 25
-# Домен, чьему формату заголовков доверяем и чей индекс чистится от
-# закрытых объявлений (живость = свежесть). Поддомены (it.pracuj.pl)
-# считаются тем же доменом - см. _is_trusted_host.
-_TRUSTED_DOMAIN = "pracuj.pl"
+JINA_BASE = "https://r.jina.ai"
+REQUEST_TIMEOUT_SECONDS = 45
+_FETCH_ATTEMPTS = 2  # Jina бывает флейки - одна повторная попытка
 
-# В реестре имя юридическое полное, а вакансии работодатель подписывает
-# коротко ('MPSystem Sp. z o.o.' или просто 'MPSYSTEM') - точная фраза
-# с полной формой не находит ничего. Формы срезаем с хвоста итеративно:
-# бывают составные ('... SP. Z O.O. SP.K.'). Родственный, но другой по
-# задаче список - companies._LEGAL_FORM_TOKENS (фильтрация токенов для
-# fuzzy-сравнения); при третьем потребителе выносить в общий модуль.
+# Организационно-правовые формы срезаем с хвоста имени перед поиском и
+# сверкой (в реестре «... SPÓŁKA Z OGRANICZONĄ...», на pracuj «... Sp. z o.o.»).
 _LEGAL_FORMS = re.compile(
     r"\s+(spółka z ograniczoną odpowiedzialnością"
     r"|prosta spółka akcyjna"
@@ -80,35 +63,46 @@ _LEGAL_FORMS = re.compile(
     re.IGNORECASE,
 )
 
-# Маркер юрлица ВНУТРИ сегмента заголовка: если обрезанный заголовок
-# кончается компанией («..., MPSystem Sp. z o.o. ...»), город съеден.
-_COMPANY_MARKER = re.compile(
-    r"spółka|sp\.?\s*z\s*o|sp\.?\s*[jk]\b|s\.?\s*a\.?\s*$", re.IGNORECASE
-)
+# Маркеры бот-защиты/капчи в теле Jina (тот же приём, что extract_website_text).
+_BOT_WALL_MARKERS = ("just a moment", "captcha", "enable javascript and cookies", "access denied")
 
-# Хвостовое многоточие - след обрезки заголовка Tavily.
-_ELLIPSIS_TAIL = re.compile(r"(?:\.\.\.|…)\s*$")
+# Родительный падеж польских месяцев из «Opublikowana: 12 lipca 2026».
+_PL_MONTHS = {
+    "stycznia": 1, "lutego": 2, "marca": 3, "kwietnia": 4, "maja": 5,
+    "czerwca": 6, "lipca": 7, "sierpnia": 8, "września": 9, "wrzesnia": 9,
+    "października": 10, "pazdziernika": 10, "listopada": 11, "grudnia": 12,
+}
 
 # Категории ролей по ключевым словам (детерминированно, стемы по-польски).
 _BUCKETS: list[tuple[str, tuple[str, ...]]] = [
     ("produkcja", ("monter", "operator", "spawacz", "produkcj", "ślusarz", "technolog", "drukarz", "pakowacz")),
     ("magazyn", ("magazyn",)),
-    ("back-office", ("księgow", "fakturzyst", "rozliczen", "administracyj", "kadr", "asystent")),
+    ("back-office", ("księgow", "fakturzyst", "rozliczen", "administracyj", "kadr", "asystent", "płac", "plac")),
     ("it", ("programist", "developer", "devops", "analityk", "tester", "informatyk")),
     ("sprzedaż", ("handlow", "sales", "przedstawiciel", "sprzedaż", "sprzedaz", "doradca klienta")),
     ("transport", ("kierowca", "spedytor", "kurier")),
 ]
+
+# Якоря разметки Jina.
+_OFFER_RE = re.compile(
+    r"^## \[(?P<title>[^\]]+)\]\((?P<url>https://www\.pracuj\.pl/praca/[^)]*oferta,(?P<id>\d+)[^)]*)\)",
+    re.MULTILINE,
+)
+_EMPLOYER_RE = re.compile(
+    r"### \[(?P<name>[^\]]+)\]\(https://pracodawcy\.pracuj\.pl/company/(?P<empid>\d+)\?pid=(?P<pid>\d+)"
+)
+_DATE_RE = re.compile(r"Opublikowana:\s*([^\n]+)")
+_CITY_RE = re.compile(r"^#### (.+)$", re.MULTILINE)
 
 
 @dataclass
 class Vacancy:
     title: str  # роль
     city: str | None
-    company: str  # работодатель, как подписан в заголовке выдачи
-    source: str  # домен источника
+    employer: str | None  # работодатель, как подписан на pracuj.pl
+    employer_id: str | None  # ID профиля работодателя на pracuj.pl
     url: str
-    published: str | None = None
-    fresh: bool = False
+    published: str | None = None  # дата публикации (ISO или сырая, если не разобрать)
 
 
 @dataclass
@@ -116,31 +110,18 @@ class JobsResult:
     company_name: str
     ok: bool = True
     vacancies: list[Vacancy] = field(default_factory=list)
-    # Имя работодателя наше, но город либо не совпал с адресом компании,
-    # либо неизвестен (заголовок обрезан): филиал или тёзка - для агента
-    # «под вопросом», не подтверждённый факт и не мусор.
-    unconfirmed: list[Vacancy] = field(default_factory=list)
     buckets: dict[str, int] = field(default_factory=dict)
-    rejected_namesakes: int = 0
-    # Частичная деградация - НЕ ok=False: сколько из запросов упало и
-    # сколько заголовков не разобралось. Блок промпта обязан оговаривать
-    # это, иначе «вакансий не найдено» звучит увереннее, чем данные.
-    failed_queries: int = 0
-    unparsed_count: int = 0
-    queries: list[str] = field(default_factory=list)  # прозрачность в evidence
+    rejected_namesakes: int = 0  # оферты, отсеянные по несовпадению работодателя
+    source_url: str | None = None  # страница поиска pracuj.pl (для evidence)
     notes: list[str] = field(default_factory=list)
 
     @property
     def has_data(self) -> bool:
-        return bool(self.vacancies or self.unconfirmed)
+        return bool(self.vacancies)
 
 
 def search_name(full_name: str) -> str:
-    """Имя для поисковых запросов: юрформы и реестровые кавычки долой.
-
-    Кавычки ('PPH "MARTEX" SP. Z O.O.') сломали бы и фразовые запросы
-    f'"{name}"', и сверку с подписью работодателя в заголовке.
-    """
+    """Имя для поиска/сверки: юрформы и реестровые кавычки долой."""
     name = re.sub(r'["„”«»]', " ", full_name)
     name = " ".join(name.split()).rstrip(" .,")
     while True:
@@ -152,79 +133,23 @@ def search_name(full_name: str) -> str:
 
 
 def _norm(text: str) -> str:
-    """Нормализация для сверок: как _norm_address в financial_health, плюс
-    транслит - выдача пишет города и по-польски, и слагами без диакритики
-    ('OSTRÓWEK' vs 'ostrowek')."""
     lowered = text.lower().translate(_PL_TRANSLIT)
     return " ".join(lowered.replace(",", " ").replace(".", " ").split())
 
 
-def _is_trusted_host(host: str) -> bool:
-    return host == _TRUSTED_DOMAIN or host.endswith("." + _TRUSTED_DOMAIN)
+def _same_employer(employer: str | None, sname: str) -> bool:
+    """Работодатель оферты - наша компания? (pracuj отдаёт полное имя).
 
-
-def _clean_city(raw: str) -> str:
-    """Город из заголовка выдачи, который Tavily обрезает многоточием.
-
-    'Ostrówek (pow. węgrowski)' / 'Ostrówek ... - Pracuj.pl' /
-    'Warszawa - Pracuj…' / 'Ostrówek (pow ...' -> чистое имя города.
+    Двустороннее вхождение нормализованных имён; короткое имя работодателя
+    (огрызок) не должно ложно входить в наше - порог длины.
     """
-    city = raw.replace("…", " ").replace("...", " ")
-    # брендовый трейлер выдачи, в т.ч. оборванный ('- Pracuj')
-    city = re.sub(r"\s*[-|]\s*Pracuj(\.pl)?\s*$", "", city, flags=re.IGNORECASE)
-    city = re.sub(r"\(.*$", "", city)  # скобка, в т.ч. оборванная обрезкой
-    return " ".join(city.split()).strip(" ,.")
-
-
-def _city_status(city: str | None, address: str | None) -> str:
-    """matched | remote | mismatch | unknown - сверка города с адресом."""
-    if not city:
-        return "unknown"
-    if "zdaln" in city.lower():  # praca zdalna - не тёзка по определению
-        return "remote"
-    if not address:
-        return "unknown"
-    base = _norm(city)
-    return "matched" if base and base in _norm(address) else "mismatch"
-
-
-def _city_from_url(url: str, address: str | None) -> str | None:
-    """Город из слага pracuj.pl - только как ПОДТВЕРЖДЕНИЕ адресного.
-
-    Слаг роли и города слиты дефисами ('...-placowych-warszawa,oferta,'),
-    надёжно отделить город нельзя - поэтому сверяем хвостовые сегменты
-    слага с адресом компании и возвращаем город только при совпадении.
-    Отклонять («другой город») по слагу нельзя - хвост может быть ролью.
-    """
-    if not address:
-        return None
-    m = re.search(r"/praca/([a-z0-9ąćęłńóśźż-]+),oferta", url.lower())
-    if not m:
-        return None
-    tail_segments = m.group(1).rsplit("-", 3)[-3:]
-    addr = _norm(address)
-    for n in (3, 2, 1):  # 'nowy dwor mazowiecki', 'zielona gora', 'warszawa'
-        tail = " ".join(tail_segments[-n:])
-        if tail and tail in addr:
-            return tail.title()
-    return None
-
-
-def _same_company(hit_company: str, sname: str) -> bool:
-    """Грубый матч работодателя из заголовка с нашим поисковым именем.
-
-    Ловит тёзок с ДРУГИМ именем; тёзку с тем же именем в другом городе
-    ловит _city_status, а с тем же именем и скрытым городом - карантин
-    unconfirmed.
-    """
-    a, b = _norm(hit_company), _norm(sname)
+    if not employer:
+        return False
+    a, b = _norm(search_name(employer)), _norm(sname)
     if not a or not b:
         return False
-    if b in a:  # наше имя внутри подписи работодателя - надёжно
+    if b in a:
         return True
-    # Обратное вхождение (подпись внутри нашего имени) - только если
-    # подпись не огрызок: обрезка Tavily оставляет 'TK' от 'TK MAXX',
-    # и он ложно входит в 'TK FOOD'.
     return a in b and len(a) >= 4 and len(a) * 2 >= len(b)
 
 
@@ -236,88 +161,83 @@ def _bucket(role: str) -> str:
     return "inne"
 
 
-def _parse_hit(title: str, url: str, sname: str) -> Vacancy | None:
-    """Вакансия из заголовка выдачи; None - профиль работодателя/шум.
+def _to_iso(pl_date: str) -> str:
+    """«12 lipca 2026» -> «2026-07-12»; если не разобрать - сырая строка."""
+    m = re.match(r"(\d{1,2})\s+([a-ząćęłńóśźż]+)\s+(\d{4})", pl_date.strip().lower())
+    if not m:
+        return pl_date.strip()
+    month = _PL_MONTHS.get(m.group(2))
+    if not month:
+        return pl_date.strip()
+    return f"{m.group(3)}-{month:02d}-{int(m.group(1)):02d}"
 
-    Обрезка Tavily делает последний сегмент ненадёжным, поэтому маркер
-    обрезки выбирает разбор, а не служит fallback'ом: если обрезанный
-    заголовок кончается компанией (юрформа или наше имя в сегменте) -
-    города нет; иначе последний сегмент - оборванный город.
-    """
-    stripped = title.strip()
-    low = stripped.lower()
-    if not low.startswith("oferta pracy"):
-        return None
-    domain = urlparse(url).netloc.removeprefix("www.").lower()
-    truncated = bool(_ELLIPSIS_TAIL.search(stripped))
-    body = _ELLIPSIS_TAIL.sub("", stripped)[len("Oferta pracy"):].strip()
-    segments = [s.strip() for s in body.split(",")]
-    if len(segments) < 2:
-        return None
 
-    role = company = None
-    city: str | None = None
-    if truncated:
-        last = segments[-1]
-        ends_with_company = bool(_COMPANY_MARKER.search(last)) or (
-            _norm(sname) and _norm(sname) in _norm(last)
+def _parse_offers(markdown: str) -> list[Vacancy]:
+    """Все оферты из живой выдачи pracuj.pl (без фильтра тёзок)."""
+    # Работодатель по offerId через pid - надёжнее позиционной привязки.
+    emp_by_offer = {
+        m.group("pid"): (m.group("name").strip(), m.group("empid"))
+        for m in _EMPLOYER_RE.finditer(markdown)
+    }
+    dates = [(m.start(), m.group(1)) for m in _DATE_RE.finditer(markdown)]
+    cities = [(m.start(), m.group(1).strip()) for m in _CITY_RE.finditer(markdown)]
+    headings = list(_OFFER_RE.finditer(markdown))
+
+    offers: list[Vacancy] = []
+    for i, m in enumerate(headings):
+        pos = m.start()
+        next_pos = headings[i + 1].start() if i + 1 < len(headings) else len(markdown)
+        offer_id = m.group("id")
+        emp = emp_by_offer.get(offer_id)
+        # дата - ближайшая ПЕРЕД заголовком (у Jina она стоит над `##`)
+        before = [v for p, v in dates if p < pos]
+        published = _to_iso(before[-1]) if before else None
+        # город - первый `####` ПОСЛЕ заголовка в пределах блока оферты
+        within = [v for p, v in cities if pos < p < next_pos]
+        offers.append(
+            Vacancy(
+                title=m.group("title").strip(),
+                city=within[0] if within else None,
+                employer=emp[0] if emp else None,
+                employer_id=emp[1] if emp else None,
+                url=m.group("url"),
+                published=published,
+            )
         )
-        if ends_with_company or len(segments) == 2:
-            role = ", ".join(segments[:-1])
-            company = last
-        else:
-            role = ", ".join(segments[:-2])
-            company = segments[-2]
-            city = _clean_city(segments[-1]) or None
-    else:
-        if len(segments) < 3:
-            return None  # полный формат - всегда «роль, компания, город»
-        role = ", ".join(segments[:-2])
-        company = segments[-2]
-        city = _clean_city(segments[-1]) or None
-
-    # Схлопываем внутренние переводы строк/повторные пробелы: заголовок
-    # выдачи попадает в промпт, многострочный текст ломал бы список фактов.
-    role = " ".join(role.split())
-    company = " ".join(company.split())
-    if not role or not company:
-        return None
-    return Vacancy(title=role, city=city, company=company, source=domain, url=url)
+    return offers
 
 
-def _tavily_hits(api_key: str, params: dict) -> list[dict] | None:
-    """Результаты запроса; [] - легитимная пустота, None - сбой источника."""
-    try:
-        response = requests.post(
-            _TAVILY_URL,
-            json=params,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=_SEARCH_TIMEOUT_SECONDS,
-        )
-    except requests.RequestException:
-        logger.warning("tavily request failed for %r", params.get("query"), exc_info=True)
-        return None
-    if response.status_code != 200:
-        logger.warning(
-            "tavily HTTP %s for %r", response.status_code, params.get("query")
-        )
-        return None
-    try:
-        return response.json().get("results", [])
-    except ValueError:
-        logger.warning("tavily non-JSON response for %r", params.get("query"))
-        return None
+def _fetch_pracuj(search_url: str) -> str | None:
+    """Живая выдача pracuj.pl через Jina; None - сбой/блок (не пустота)."""
+    for attempt in range(_FETCH_ATTEMPTS):
+        try:
+            response = requests.get(
+                f"{JINA_BASE}/{search_url}",
+                headers={"Accept": "text/markdown"},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException:
+            logger.warning("jina fetch failed (attempt %d)", attempt + 1, exc_info=True)
+            continue
+        if response.status_code != 200 or len(response.text) < 500:
+            logger.warning("jina bad response: HTTP %s len=%d", response.status_code, len(response.text))
+            continue
+        head = response.text[:3000].lower()
+        if any(marker in head for marker in _BOT_WALL_MARKERS):
+            logger.warning("pracuj.pl bot-wall via jina")
+            return None
+        return response.text
+    return None
 
 
-def get_jobs(company_name: str, address: str | None) -> JobsResult:
-    """Активные вакансии компании из поисковой выдачи, с фильтром тёзок.
+def get_jobs(company_name: str, address: str | None = None) -> JobsResult:
+    """Активные вакансии компании из живой выдачи pracuj.pl (через Jina).
 
-    Контракт sources: наружу не бросает никогда - любой неожиданный сбой
-    превращается в ok=False с пометкой в notes.
+    Контракт sources: наружу не бросает никогда.
     """
     result = JobsResult(company_name=company_name)
     try:
-        return _collect_jobs(result, company_name, address)
+        return _collect(result, company_name, address)
     except Exception:
         logger.exception("vacancies adapter crashed for %r", company_name)
         result.ok = False
@@ -325,121 +245,48 @@ def get_jobs(company_name: str, address: str | None) -> JobsResult:
         return result
 
 
-def _collect_jobs(
-    result: JobsResult, company_name: str, address: str | None
-) -> JobsResult:
+def _collect(result: JobsResult, company_name: str, address: str | None) -> JobsResult:
     sname = search_name(company_name)
     result.notes.append(f"поисковое имя: {sname}")
+    search_url = f"https://www.pracuj.pl/praca/{quote(sname.lower())};kw"
+    result.source_url = search_url
 
-    # Ключ читаем в момент вызова, не при импорте (порядок load_dotenv -
-    # см. web_search.py).
-    api_key = os.environ.get("TAVILY_API_KEY", "")
-    if not api_key:
+    markdown = _fetch_pracuj(search_url)
+    if markdown is None:
         result.ok = False
-        result.notes.append("поиск вакансий недоступен (нет TAVILY_API_KEY)")
+        result.notes.append("живая выдача pracuj.pl недоступна (сбой Jina/бот-защита)")
         return result
 
-    base = {"max_results": _MAX_RESULTS_PER_QUERY, "topic": "general"}
-    plans = [
-        ("general", {**base, "query": f'"{sname}" praca oferty'}, False),
-        # свежесть этим хитам даст сам домен (см. fresh ниже)
-        ("pracuj.pl",
-         {**base, "query": f'"{sname}" oferty pracy',
-          "include_domains": [_TRUSTED_DOMAIN]}, False),
-        ("fresh-month",
-         {**base, "query": f'"{sname}" praca', "time_range": "month"}, True),
-    ]
-
-    parsed: dict[tuple[str, str], Vacancy] = {}  # дедуп по (роль, город)
-    unparsed: list[str] = []
-    # Запросы независимы - параллелим (тот же приём, что run_health_check);
-    # таймаут стоит на сокете в _tavily_hits, поэтому потоки завершаются
-    # сами и пул можно закрывать обычным способом.
-    with ThreadPoolExecutor(max_workers=len(plans)) as pool:
-        futures = [
-            pool.submit(_tavily_hits, api_key, params) for _, params, _ in plans
-        ]
-        for (label, params, marks_fresh), future in zip(plans, futures):
-            hits = future.result()
-            if hits is None:
-                result.notes.append(f"поиск '{label}' не удался")
-                result.failed_queries += 1
-                continue
-            result.queries.append(f"{label}: {params['query']}")
-            for item in hits:
-                title = (item.get("title") or "").strip()
-                url = item.get("url") or ""
-                vacancy = _parse_hit(title, url, sname)
-                if vacancy is None:
-                    if title:
-                        unparsed.append(title[:90])
-                    continue
-                if vacancy.city is None and _is_trusted_host(vacancy.source):
-                    vacancy.city = _city_from_url(url, address)
-                # Свежесть: индексировано за месяц ИЛИ живая карточка pracuj.
-                fresh = marks_fresh or _is_trusted_host(vacancy.source)
-                key = (vacancy.title.lower(), (vacancy.city or "").lower())
-                if key in parsed:
-                    parsed[key].fresh = parsed[key].fresh or fresh
-                else:
-                    vacancy.fresh = fresh
-                    parsed[key] = vacancy
-
-    if result.failed_queries == len(plans):
-        result.ok = False
-        return result
-
-    # Один и тот же оффер мог прийти полным заголовком (с городом) и
-    # обрезанным (без) - склеиваем безгородный вариант, если городская
-    # версия ровно одна (при нескольких слить не во что однозначно).
-    by_title: dict[str, list[Vacancy]] = {}
-    for vacancy in parsed.values():
-        by_title.setdefault(vacancy.title.lower(), []).append(vacancy)
-
-    rejected_examples: list[str] = []
-    for group in by_title.values():
-        with_city = [v for v in group if v.city]
-        cityless = [v for v in group if not v.city]
-        if cityless and len(with_city) == 1:
-            with_city[0].fresh = with_city[0].fresh or any(v.fresh for v in cityless)
-            cityless = []
-        for vacancy in with_city + cityless:
-            if not _same_company(vacancy.company, sname):
-                result.rejected_namesakes += 1
-                if len(rejected_examples) < 3:
-                    rejected_examples.append(f"{vacancy.company} - {vacancy.title}")
-                continue
-            if _city_status(vacancy.city, address) in ("matched", "remote"):
-                result.vacancies.append(vacancy)
-            else:
-                # mismatch или город неизвестен: тёзку с тем же именем и
-                # скрытым городом не отличить - только «под вопросом».
-                result.unconfirmed.append(vacancy)
+    all_offers = _parse_offers(markdown)
+    # Фильтр тёзок: оставляем только оферты нашего работодателя.
+    for vac in all_offers:
+        if _same_employer(vac.employer, sname):
+            result.vacancies.append(vac)
+        else:
+            result.rejected_namesakes += 1
 
     result.buckets = dict(Counter(_bucket(v.title) for v in result.vacancies))
 
+    # Мягкий сигнал (не фильтр): все оферты в другом городе, чем адрес -
+    # возможен филиал или всё же тёзка с тем же именем.
+    if result.vacancies and address:
+        addr = _norm(address)
+        if not any(v.city and _norm(re.sub(r"\(.*?\)", "", v.city)) in addr for v in result.vacancies):
+            result.notes.append(
+                "ни один город вакансий не совпал с адресом компании - "
+                "возможен филиал или тёзка"
+            )
     if result.rejected_namesakes:
         result.notes.append(
-            f"отсечено тёзок: {result.rejected_namesakes}, "
-            f"например: {'; '.join(rejected_examples)}"
-        )
-    if unparsed:
-        # Профили работодателей и агрегаторы-архивы не матчатся - это
-        # норма, но не теряем молча: счётчик и примеры для отладки.
-        unique = list(dict.fromkeys(unparsed))
-        result.unparsed_count = len(unique)
-        result.notes.append(
-            f"нераспознанных заголовков выдачи: {len(unique)}, "
-            f"например: {'; '.join(unique[:3])}"
+            f"отсеяно оферт по чужому работодателю: {result.rejected_namesakes}"
         )
     if not result.has_data:
-        result.notes.append("активных вакансий в выдаче не найдено")
+        result.notes.append("активных вакансий на pracuj.pl не найдено")
     return result
 
 
 if __name__ == "__main__":
-    # Ручной прогон на реальной компании (3 кредита Tavily за запуск):
-    #   uv run python -m app.sources.vacancies 0000475078
+    # Ручной прогон: uv run python -m app.sources.vacancies 0000475078
     import argparse
 
     from dotenv import load_dotenv
@@ -449,8 +296,6 @@ if __name__ == "__main__":
     cli.add_argument("krs", help="KRS компании (ведущие нули можно опустить)")
     args = cli.parse_args()
 
-    # Импорт здесь, а не в шапке: как библиотека модуль от app.companies
-    # не зависит и не должен тянуть его при импорте из financial_health.
     from app.companies import resolve_company
     from app.models import CompanyQuery
 
@@ -461,15 +306,10 @@ if __name__ == "__main__":
     print(f"{company.name} | {company.address}")
 
     jobs = get_jobs(company.name, company.address)
-    print(
-        f"ok={jobs.ok} vacancies={len(jobs.vacancies)} "
-        f"unconfirmed={len(jobs.unconfirmed)} rejected={jobs.rejected_namesakes}"
-    )
+    print(f"ok={jobs.ok} vacancies={len(jobs.vacancies)} rejected={jobs.rejected_namesakes}")
     for vac in jobs.vacancies:
-        marker = "F" if vac.fresh else " "
-        print(f"  [{marker}] {vac.title} | {vac.city or 'город?'} | {vac.url}")
-    for vac in jobs.unconfirmed:
-        print(f"  ? {vac.title} | {vac.city or 'город?'} | {vac.company} | {vac.url}")
+        print(f"  {vac.published or '????-??-??'} | {vac.title} | {vac.city or 'город?'} | {vac.employer}")
+        print(f"       {vac.url}")
     print("buckets:", jobs.buckets)
     for note in jobs.notes:
         print("note:", note)
