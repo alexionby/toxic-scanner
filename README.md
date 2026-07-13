@@ -84,6 +84,60 @@ Evidence store (JSON)  +  Report renderer (Markdown → sanitised HTML)
    and beneficial owners, run the reputation agent, compute the quality star,
    persist evidence, and render the report.
 
+### Agent graph
+
+The reputation step is a LangGraph `create_react_agent`, so LangGraph will hand
+you the graph for free — `agent.get_graph().draw_mermaid()` prints the Mermaid
+below (GitHub renders it live):
+
+```mermaid
+graph TD;
+    __start__([__start__]):::first
+    agent(agent)
+    tools(tools)
+    __end__([__end__]):::last
+    __start__ --> agent;
+    agent -.-> __end__;
+    agent -.-> tools;
+    tools --> agent;
+    classDef first fill-opacity:0
+    classDef last fill:#bfb6fc
+```
+
+Out of the box that only captures the ReAct *mechanics* — the loop is identical
+for any tool-calling agent. What makes *this* one specific is the two tools it
+drives and the deterministic pipeline wrapped around it: the hard facts are
+gathered **in parallel before** the agent runs and handed to it as ready
+context (so it never re-guesses them), and its free-text output is scored by
+**formula, not by the model**:
+
+```mermaid
+flowchart TD
+    REQ["POST /companies/:krs/health-check"] --> POOL["Fact-gathering<br/>(ThreadPoolExecutor · parallel)"]
+    POOL --> KRS["KRS filing<br/>facts · reorganizations"]
+    POOL --> CRBR["CRBR<br/>beneficial owners + network"]
+    POOL --> FIN["Financials<br/>revenue / profit by year"]
+    POOL --> JOB["Vacancies<br/>hiring signal"]
+
+    KRS --> PROMPT
+    CRBR --> PROMPT
+    FIN --> PROMPT
+    JOB --> PROMPT
+    PROMPT["Task prompt<br/>hard facts + 3-step research plan"] --> AGENT
+
+    subgraph REACT["ReAct agent — LangGraph + Gemini Flash Lite"]
+        AGENT(["agent · LLM"]) -. "tool call" .-> TOOLS["tools"]
+        TOOLS --> AGENT
+    end
+
+    TOOLS -. "web" .-> WS["web_search · Tavily<br/>site → news → LinkedIn"]
+    TOOLS -. "read" .-> EX["extract_website_text · Jina<br/>(bot-wall aware)"]
+
+    AGENT -. "no tool call" .-> RAW["report + People/Finances score JSON"]
+    RAW --> SCORE["build_scores<br/>4 deterministic axes + People (LLM)"]
+    SCORE --> OUT["Markdown → sanitised HTML<br/>+ evidence JSON (full agent trace)"]
+```
+
 ---
 
 ## Engineering highlights
