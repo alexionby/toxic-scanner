@@ -29,6 +29,7 @@ from app import scoring
 from app.models import CompanyCandidate
 from app.sources.crbr import BeneficiariesResult, get_beneficiaries
 from app.sources.financials import FinancialsResult, get_financials
+from app.sources.vacancies import JobsResult, get_jobs
 
 
 def message_content_to_text(content: object) -> str:
@@ -123,9 +124,11 @@ FINANCIAL_SYSTEM_PROMPT = """\
 - Не выдумывай. Если по какому-то разделу ничего не нашлось - пиши
   «данных не нашлось» прямо; для малых компаний это нормально.
 - Вакансии - один из самых честных сигналов о планах компании: кого
-  нанимают, столько примерно и куда (новые роли = новые инициативы,
+  нанимают, сколько примерно и куда (новые роли = новые инициативы,
   массовый найм = рост, вакансии продажников на новый рынок =
-  экспансия). Указывай источник и дату публикации вакансии, если видна.
+  экспансия). Активные вакансии уже собраны и даны в задаче готовым
+  блоком - используй только их и НЕ ищи вакансии сам; ссылайся на URL
+  из блока, свежесть бери из пометки блока (дат публикации нет).
 - LinkedIn часто закрыт для чтения - если страница не открылась, не
   придумывай её содержимое; используй то, что видно из поисковой
   выдачи (число сотрудников, свежие посты в сниппетах), с пометкой.
@@ -178,10 +181,11 @@ KRS, NIP, REGON, адрес, статус (из задачи)
 если видно из данных, кто вероятный покупатель внутри компании
 (владелец-управленец, правление, конкретный отдел из вакансий).
 ## Качество данных
-отчитайся по каждому из четырёх шагов исследования (сайт, новости,
-вакансии, LinkedIn): что искал и что нашлось; чего не хватает
+отчитайся по каждому источнику: сайт, новости, LinkedIn (что искал и
+что нашлось) и вакансии (даны готовым блоком - сколько подтверждённых,
+что под вопросом, или «источник недоступен»); чего не хватает
 (закрытый LinkedIn, нет новостей, нет вакансий), стоп-сигналы из
-реестров если есть. Если какой-то шаг не дал результатов - это
+реестров если есть. Если какой-то источник не дал результатов - это
 нормально, но он обязан быть здесь упомянут.
 ## Источники
 список URL
@@ -564,8 +568,65 @@ def _financials_block(fin: FinancialsResult) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def _jobs_block(jobs: JobsResult) -> str:
+    """Готовые вакансии из адаптера - агент их не ищет ни при каком исходе.
+
+    Дат публикации в выдаче нет, поэтому свежесть - флаг из адаптера
+    (живая карточка pracuj.pl или индексация за месяц), не дата.
+    """
+    if not jobs.ok:
+        return (
+            "Источник вакансий недоступен (сбой поиска) - в «Качестве "
+            "данных» так и напиши: «вакансии проверить не удалось». "
+            "Сам вакансии НЕ ищи.\n\n"
+        )
+    if not jobs.has_data:
+        return (
+            "Активные вакансии собраны автоматически: не найдено ни одной. "
+            "Пиши прямо «активных вакансий не найдено» - для малых компаний "
+            "это нормально. Сам вакансии НЕ ищи и не выдумывай.\n\n"
+        )
+    lines = [
+        "Активные вакансии (собраны автоматически из поисковой выдачи; "
+        "«свежая» = живая карточка pracuj.pl или проиндексирована за "
+        "последний месяц, дат публикации в выдаче нет). Используй их как "
+        "есть, сам вакансии НЕ ищи:"
+    ]
+    for v in jobs.vacancies:
+        freshness = "свежая" if v.fresh else "давность неизвестна"
+        lines.append(f"- {v.title} - {v.city or 'город не указан'} ({freshness}; {v.url})")
+    if jobs.buckets:
+        dist = ", ".join(
+            f"{name}: {count}"
+            for name, count in sorted(jobs.buckets.items(), key=lambda kv: -kv[1])
+        )
+        lines.append(f"Распределение по направлениям: {dist}.")
+    if jobs.unconfirmed:
+        lines.append(
+            "Под вопросом (город не совпал с адресом компании или "
+            "неизвестен - филиал или тёзка; упоминай только с оговоркой):"
+        )
+        for v in jobs.unconfirmed:
+            lines.append(f"- {v.title} - {v.city or 'город?'} ({v.company}; {v.url})")
+    if jobs.rejected_namesakes:
+        lines.append(
+            f"Ещё {jobs.rejected_namesakes} объявлений отсечено как чужие "
+            "тёзки - в отчёт их не тащи."
+        )
+    lines.append(
+        "Подсказки интерпретации (сверяй с остальными данными): несколько "
+        "производственных ролей -> вероятно, наращивают мощности; первые "
+        "роли księgowość/kadry в штат -> бэк-офис перерос аутсорсинг; роли "
+        "sprzedaż под новый рынок -> экспансия."
+    )
+    return "\n".join(lines) + "\n\n"
+
+
 def _task_prompt(
-    company: CompanyCandidate, fin: FinancialsResult, ben: BeneficiariesResult
+    company: CompanyCandidate,
+    fin: FinancialsResult,
+    ben: BeneficiariesResult,
+    jobs: JobsResult,
 ) -> str:
     today = date.today().isoformat()
     return (
@@ -584,12 +645,13 @@ def _task_prompt(
         + _owners_block(ben, company, date.today())
         + _management_block(company, ben)
         + _financials_block(fin)
+        + _jobs_block(jobs)
         +
-        "Выполни ВСЕ четыре шага исследования ниже, в каждом - минимум "
+        "Выполни ВСЕ три шага исследования ниже, в каждом - минимум "
         "один отдельный вызов web_search со своим запросом. Один поиск "
         "не покрывает несколько шагов: выдача про сайт не заменяет "
-        "поиск вакансий. Не начинай писать отчёт, пока не сделал все "
-        "четыре шага.\n\n"
+        "поиск новостей. Не начинай писать отчёт, пока не сделал все "
+        "три шага. Вакансии уже даны готовым блоком выше - их не ищи.\n\n"
         "Шаг 1 - сайт компании: найди его (например запросом "
         f"'{company.name} oficjalna strona') и прочитай главную страницу; "
         "затем прочитай 1-3 полезные подстраницы, если они есть (o nas / "
@@ -601,14 +663,7 @@ def _task_prompt(
         f"'\"{company.name}\" 2025 OR 2026'). Открывай статьи с датами; "
         "события старше 12 месяцев в хронологию не тащи, кроме "
         "реорганизаций из фактов.\n\n"
-        "Шаг 3 - вакансии (сигнал о планах): поищи активные объявления "
-        f"(например '{company.name} praca oferty', "
-        f"'{company.name} pracuj.pl', '{company.name} justjoin.it', "
-        f"'{company.name} nofluffjobs'). Открой найденные списки вакансий "
-        "и зафиксируй: какие роли, сколько, какие из них выглядят новыми "
-        "направлениями. Сверяй город/адрес компании, чтобы не спутать с "
-        "тёзками.\n\n"
-        "Шаг 4 - LinkedIn (best-effort): поищи страницу компании "
+        "Шаг 3 - LinkedIn (best-effort): поищи страницу компании "
         f"(например '{company.name} linkedin'). Страница часто закрыта "
         "бот-защитой - тогда используй только то, что видно в поисковой "
         "выдаче (число сотрудников, сниппеты постов), с пометкой об "
@@ -627,19 +682,23 @@ class HealthCheckResult:
 
 
 def run_health_check(company: CompanyCandidate) -> HealthCheckResult:
-    # fin (цифры агрегаторов) и ben (бенефициары CRBR) тянем детерминированно
-    # ДО агента - это готовые данные/первоисточник, ему незачем искать их в
-    # вебе и гадать. Запросы независимы и оба сетевые (Jina + POST к CRBR),
-    # поэтому гоняем параллельно, чтобы не складывать таймауты на и без того
-    # латентном пути (тот же приём, что в companies._resolve_by_name).
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    # fin (цифры агрегаторов), ben (бенефициары CRBR) и jobs (вакансии из
+    # выдачи) тянем детерминированно ДО агента - это готовые данные, ему
+    # незачем искать их в вебе и гадать. Запросы независимы и все сетевые,
+    # поэтому гоняем параллельно, чтобы не складывать таймауты на и без
+    # того латентном пути (тот же приём, что в companies._resolve_by_name).
+    # max_workers = числу задач: иначе третья ждала бы свободный поток и
+    # «параллельность» стала бы последовательностью.
+    with ThreadPoolExecutor(max_workers=3) as pool:
         fin_future = pool.submit(get_financials, company.name, company.krs or "")
+        jobs_future = pool.submit(get_jobs, company.name, company.address)
         ben_future = (
             pool.submit(get_beneficiaries, company.nip, with_network=True)
             if company.nip
             else None
         )
         fin = fin_future.result()
+        jobs = jobs_future.result()
         ben = (
             ben_future.result()
             if ben_future
@@ -648,7 +707,7 @@ def run_health_check(company: CompanyCandidate) -> HealthCheckResult:
 
     agent = _get_agent()
     result = agent.invoke(
-        {"messages": [HumanMessage(content=_task_prompt(company, fin, ben))]}
+        {"messages": [HumanMessage(content=_task_prompt(company, fin, ben, jobs))]}
     )
     messages = result["messages"]
     raw_report = message_content_to_text(messages[-1].content)
@@ -665,6 +724,7 @@ def run_health_check(company: CompanyCandidate) -> HealthCheckResult:
         "data_confidence": "secondary_sources",
         "financials": asdict(fin),
         "beneficiaries": asdict(ben),
+        "jobs": asdict(jobs),
         "scores": scores,
         "agent_stats": _agent_stats(messages),
         "agent_trace": _messages_to_trace(messages),
