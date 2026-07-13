@@ -595,17 +595,6 @@ const WAIT_STAGES = [
 ];
 
 let waitingTimer = null;
-// Реальный статус джобы с сервера (queued/running) и момент старта
-// рана: этапы сцены ожидания отсчитываются от выхода из очереди.
-let currentJobStatus = null;
-let waitingStartedAt = 0;
-
-function noteJobStatus(status) {
-  if (status === "running" && currentJobStatus !== "running") {
-    waitingStartedAt = Date.now();
-  }
-  currentJobStatus = status;
-}
 
 function drawSkeletonRadar() {
   const R = currentRadar();
@@ -674,17 +663,9 @@ function startWaiting(companyName) {
     waitingStages.append(li);
   }
 
-  currentJobStatus = null;
-  waitingStartedAt = Date.now();
+  const startedAt = Date.now();
   const tick = () => {
-    const elapsed = Math.round((Date.now() - waitingStartedAt) / 1000);
-    // Пока джоба в очереди (все воркеры заняты), этапы не идут -
-    // честно показываем ожидание вместо фальшивого прогресса.
-    if (currentJobStatus === "queued") {
-      waitingElapsed.textContent = `в очереди ${elapsed} с — ждём свободного воркера`;
-      renderWaitingStages(0);
-      return;
-    }
+    const elapsed = Math.round((Date.now() - startedAt) / 1000);
     waitingElapsed.textContent = `идёт ${elapsed} с · обычно 30–120 секунд`;
     renderWaitingStages(elapsed);
   };
@@ -713,47 +694,6 @@ compactRadarQuery.addEventListener("change", () => {
     drawSkeletonRadar();
   }
 });
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-// Поллинг статуса джобы. Интервал 2.5с - компромисс: чаще незачем
-// (ран идёт минуты), реже - заметная задержка показа готового отчёта.
-// Дедлайн - предохранитель от вечного спиннера, если джоба зависла.
-const JOB_POLL_INTERVAL_MS = 2500;
-const JOB_POLL_DEADLINE_MS = 10 * 60 * 1000;
-
-async function pollJob(statusUrl) {
-  const deadline = Date.now() + JOB_POLL_DEADLINE_MS;
-  while (Date.now() < deadline) {
-    const response = await fetch(statusUrl);
-
-    if (response.status === 404) {
-      // Стор джобов живёт в памяти процесса: 404 на поллинге значит,
-      // что сервер перезапустился и джоба потерялась.
-      throw new Error(
-        "Джоба потерялась (сервер перезапустился). Запустите отчёт ещё раз."
-      );
-    }
-    if (!response.ok) {
-      throw new Error(`Ошибка статуса джобы (HTTP ${response.status})`);
-    }
-
-    const data = await response.json();
-    noteJobStatus(data.status);
-
-    if (data.status === "succeeded") {
-      return data.result;
-    }
-    if (data.status === "failed") {
-      throw new Error(`Ошибка отчёта: ${data.error ?? "неизвестная ошибка"}`);
-    }
-
-    await sleep(JOB_POLL_INTERVAL_MS);
-  }
-  throw new Error(
-    "Отчёт строится дольше 10 минут — что-то пошло не так. Попробуйте позже."
-  );
-}
 
 async function buildHealthCheck(candidate, buttonEl) {
   const idleLabel = buttonEl.textContent;
@@ -785,24 +725,21 @@ async function buildHealthCheck(candidate, buttonEl) {
       return;
     }
 
-    // Сабмит возвращает не отчёт, а квитанцию: 202 + адрес статуса.
-    if (response.status !== 202 || data === null) {
+    if (!response.ok || data === null) {
       showRawResponse(`HTTP ${response.status}\n${rawText.slice(0, 2000)}`);
       const detail =
         data && data.detail ? JSON.stringify(data.detail) : rawText.slice(0, 300);
       throw new Error(`Ошибка отчёта (HTTP ${response.status}): ${detail}`);
     }
 
-    const result = await pollJob(data.status_url);
-
     showResult({
-      company: result.company.name,
-      report_url: result.report_url,
-      evidence_url: result.evidence_url,
-      report: result.report,
-      scores: result.scores,
+      company: data.company.name,
+      report_url: data.report_url,
+      evidence_url: data.evidence_url,
+      report: data.report,
+      scores: data.scores,
     });
-    setResolverStatus(`Отчёт готов: ${result.report_file}`);
+    setResolverStatus(`Отчёт готов: ${data.report_file}`);
     resultCard.scrollIntoView({ behavior: "smooth" });
   } catch (error) {
     setResolverStatus(error.message, true);
